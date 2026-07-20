@@ -1,0 +1,6 @@
+=== EXTENDED ===
+- unused word (1x32 bit), second word processed
+- not mandatory but if omitting then provide as 0x0000000000000000
+- probably use for LED controls?
+|---------------------------------------------------|
+00 00 00 00   __ __ __ __   __ __ __ __   __ __ __ __

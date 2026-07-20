@@ -1,0 +1,43 @@
+=== GENERAL ===
+- main game running word (1x32 bit), this is the FIRST word processed
+- mandatory to provide valid 1st byte (remaining 3 can be 0x0)
+- per-target protocol see 'target_protocol'
+|---------------------------------------------------|
+00 00 00 00   __ __ __ __   __ __ __ __   __ __ __ __
+↑↑ ↑↑ ↑↑ ↑↑
+|| || || ||
+MODE  || ||
+- 00 = idle
+- 01 = target reset (bring servos to 0°)
+- 02 = run game
+- 03 = run debug (optional target defined on [0x0101,0x1000])
+   || || ||
+   RESERVED (maybe for kind of debug?)
+      || ||
+      TARGET DEBUG
+      - 0x0000 = target 1, 0x0001 = target 2, etc... for each of 12 targets
+
+__ __ __ __   00 00 00 00   __ __ __ __   __ __ __ __
+              |---------|
+              GAME RUN TIME
+              - 10s increments (i.e. 0x00000001 = 1 x 10 = 10s, 0x00001111 = 15 x 10 = 150s or 2m30s)
+
+__ __ __ __   __ __ __ __   00 00 00 00   __ __ __ __
+                            |---| ↑↑ ↑↑
+                            TIME BETWEEN TARGET MOVE CYCLES
+                            - seconds (i.e. 0x0101 = 5, 5s between cycles, max 15s)
+                            - used for hold (hidden), exposed (visible) and jukes
+                                  || ||
+                                  TARGET MOVEMENT SPEED
+                                  - uh idk yet, just know its between 0-3
+                                  - used for transitions and jukes
+                                     ||
+                                     RESERVED
+
+__ __ __ __   __ __ __ __   __ __ __ __   00 00 00 00
+                                          |---------|
+                                          TARGET JUKE %
+                                          - decimal (i.e. 0x00110010 = 50, or 50% of target move cycles are jukes)
+
+
+                            

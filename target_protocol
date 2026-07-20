@@ -1,0 +1,36 @@
+=== TARGET ===
+- per-target control, for when you wanna get funky
+- mandatory to send with general seq (see 'general_protocol')
+- THIRD (at min) word processed
+- can send up to 12 (1 for each target), each must have unique ID
+- sending 0x__00000000000000 defaults that target to config sent w. general protocol
+|---------------------------------------------------|
+00 00 00 00   __ __ __ __   __ __ __ __   __ __ __ __
+|---| |---|
+TARGET ID
+- 0-12 [0x0000, 0x1100]
+- used for hold (hidden), exposed (visible) and jukes
+      |---|
+      RESERVED
+__ __ __ __   00 00 00 00   __ __ __ __   __ __ __ __
+              |---| ↑↑ ↑↑
+              TIME BETWEEN TARGET MOVE CYCLES
+              - seconds (i.e. 0x0101 = 5, 5s between cycles, max 15s)
+              - used for hold (hidden), exposed (visible) and jukes
+                    || ||
+                    TARGET MOVEMENT SPEED
+                    - uh idk yet, just know its between 0-3
+                    - used for transitions and jukes
+                       ||
+                       RESERVED
+
+__ __ __ __   __ __ __ __   00 00 00 00   __ __ __ __
+                            |---------|
+                            TARGET JUKE %
+                            - decimal (i.e. 0x00110010 = 50, or 50% of target move cycles are jukes)
+
+__ __ __ __   __ __ __ __   __ __ __ __   00 00 00 00
+                                          |---------|
+                                          TARGET RANDO SPEED %
+                                          - decimal (i.e. 0x00001010 = 10, or 10%)
+                                          - makes target move cycles a random speed between lvls 0-3
