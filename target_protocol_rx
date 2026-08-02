@@ -1,0 +1,47 @@
+=== TARGET ===
+- per-target control word (1x32 bit),
+- mandatory to send with general seq (see 'general_protocol')
+|---------------------------------------------------|
+00 00 00 00   __ __ __ __   __ __ __ __   __ __ __ __
+|---| |---|
+PROTOCOL ID
+- 0x0000 = general
+- 0x0001 = target (you are here)
+- 0x0002 = lighting
+- 0x0110 = return
+      |---|
+      MODE
+      - 0x0000 = halt target
+      - 0x0001 = start moving target (with following config), keeps running until halted
+      - 0x0002 = one-time target move to specific % (in terms of % hidden, 0 = visible, 100% = completely hidden, provided in final 4 bits)
+
+__ __ __ __   00 00 00 00   __ __ __ __   __ __ __ __
+              |---| ↑↑ ↑↑
+              TARGET ID
+              - 0-11 [0x0000, 0x1011] for each target (12)
+              - 12 (0x1100) for all targets
+                    || ||
+                    TARGET MOVEMENT SPEED
+                    - between 0-3 (25/50/75/100)
+                    - used for transitions, moves and jukes
+                       ||
+                       RESERVED
+
+__ __ __ __   __ __ __ __   00 00 00 00   __ __ __ __
+                            |---| |---|
+                            TIME BETWEEN TARGET MOVE CYCLES
+                            - seconds (i.e. 0x0101 = 5, 5s between cycles, max 15s)
+                            - used for hold (hidden), exposed (visible) and jukes
+                                  |---|
+                                  TARGET JUKE %
+                                  - decimal in 10% increments (i.e. 0x0011 = 3, or 30% of target move cycles are jukes)
+
+__ __ __ __   __ __ __ __   __ __ __ __   00 00 00 00
+                                          |---| |---|
+                                          TARGET RANDOM SPEED CHANGE %
+                                          - decimal in 10% increments (i.e. 0x0011 = 3, or 30%)
+                                          - makes target move cycles a random speed between lvls 0-3, is checked every target move cycle
+                                                |---|
+                                                TARGET VISIBILITY
+                                                - % hidden in 10% increments (0 = visible, 100% = completely hidden, i.e. 0x0011 = 3, or 30%)
+

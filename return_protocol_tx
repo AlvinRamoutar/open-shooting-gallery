@@ -1,0 +1,38 @@
+=== RETURN ===
+- returning game state (i.e. target hit, end of match, result of debugs), the only word (1x32 bit) sent
+- requires server is listening over serial
+|---------------------------------------------------|
+00 00 00 00   __ __ __ __   __ __ __ __   __ __ __ __
+|---| |---|
+PROTOCOL ID
+- 0x0000 = general
+- 0x0001 = target
+- 0x0002 = lighting
+- 0x0110 = return (you are here)
+      |---|
+      MODE
+      - 0x0000 = idle
+      - 0x0001 = (acknowledgement of) target reset (bring servos to 0°)
+      - 0x0010 = (acknowledgement of) run game (or round is active)
+      - 0x0011 = (acknowledgement of) run debug (optional target defined on [0x0101,0x1000])
+      - 0x0100 = target hit 
+      - 0x0101 = end of game signal
+      - 0x1001 = to stdout (for debugging)
+      - 0x1010 = error
+
+__ __ __ __   00 00 00 00   __ __ __ __   __ __ __ __
+              |---| ↑↑ ↑↑
+              TARGET ID
+              - 0-11 [0x0000, 0x1011] for each target (12)
+              - 15 (0x1111) = controller itself
+                    || ||
+                    STATUS
+                    - 00 = idle
+                    - 01 = hit
+                    - 02 = stuck
+                    - 03 = lost connectivity to target / not found
+                    - 04 = lost connectivity to server
+
+__ __ __ __   __ __ __ __   00 00 00 00   00 00 00 00
+                            |-----------------------|
+                            RESERVED

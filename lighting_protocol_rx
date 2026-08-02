@@ -1,0 +1,69 @@
+=== LIGHTING ===
+- custom lighting controls, 3 words (3x32 bit)
+|---------------------------------------------------|   |---------------------------------------------------|   |---------------------------------------------------|
+00 00 00 00   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __
+|---| |---|
+PROTOCOL ID
+- 0x0000 = general
+- 0x0001 = target
+- 0x0002 = lighting (you are here)
+- 0x0110 = return
+      |---|
+      MODE
+      - 0x0000 = turn lighting off
+      - 0x0001 = turn lighting on
+
+__ __ __ __   00 00 00 00   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __
+              |---| |---|
+              TARGET ID
+              - 0-11 [0x0000, 0x1011] for each target (12)
+              - 12 (0x1100) for all targets, via SPI
+              - 13 (0x1101) for arena lighting, controlled via relay
+              - 15 for ALL lighting
+                    |---|
+                    RESERVED
+
+__ __ __ __   __ __ __ __   00 00 00 00   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __
+                            |---------|
+                            BRIGHTNESS
+                            - decimal (0x00000001 = 1%, 0x01100100 = 100%)
+
+__ __ __ __   __ __ __ __   __ __ __ __   00 00 00 00   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __
+                                          |---------|
+                                          RESERVED
+
+__ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   00 00 00 00   00 00 00 00   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __
+                                                        |-----------------------|
+                                                        START LED RANGE
+                                                        - only relevant for target LED strips (SPI)
+                                                        - all target LED strips on same SPI bus, will comprise of 8960 addressible LEDs split into segments per target (e.g. 0-511 = target 0, 512-1023 = target 1)
+                                                        - only represents the range of LEDs WITHIN THAT TARGET RANGE (i.e. starting at "10" for target 6 would be 0x1010, the exact LED range is calculated through lighting code)
+                                                        - following color settings are set for ALL LEDS in this range
+
+__ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   00 00 00 00   00 00 00 00   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __
+                                                                                    |-----------------------|
+                                                                                    END LED RANGE
+                                                                                    - only relevant for target LED strips (SPI)
+                                                                                    - all target LED strips on same SPI bus, will comprise of 8960 addressible LEDs split into segments per target (e.g. 0-511 = target 0, 512-1023 = target 1)
+                                                                                    - only represents the range of LEDs WITHIN THAT TARGET RANGE (i.e. starting at "10" for target 6 would be 0x1010, the exact LED range is calculated through lighting code)
+                                                                                    - following color settings are set for ALL LEDS in this range
+                                                                                    
+__ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   00 00 00 00   __ __ __ __   __ __ __ __   __ __ __ __
+                                                                                                                |---------|
+                                                                                                                R (RED)
+                                                                                                                - int (0-255)
+
+__ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   00 00 00 00   __ __ __ __   __ __ __ __
+                                                                                                                              |---------|
+                                                                                                                              G (GREEN)
+                                                                                                                              - int (0-255)
+
+__ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   00 00 00 00   __ __ __ __
+                                                                                                                                            |---------|
+                                                                                                                                            B (BLUE)
+                                                                                                                                            - int (0-255)
+
+__ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   __ __ __ __   00 00 00 00
+                                                                                                                                                          |---------|
+                                                                                                                                                          W (WHITE)
+                                                                                                                                                          - int (0-255)

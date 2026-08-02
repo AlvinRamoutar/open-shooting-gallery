@@ -1,0 +1,34 @@
+=== GENERAL ===
+- main game running word (1x32 bit), this is the FIRST word processed
+|---------------------------------------------------|
+00 00 00 00   __ __ __ __   __ __ __ __   __ __ __ __
+|---| |---|
+PROTOCOL ID
+- 0x0000 = general (you are here)
+- 0x0001 = target 
+- 0x0002 = lighting
+- 0x0110 = return
+      |---|
+      MODE
+      - 0x0000 = idle
+      - 0x0001 = target reset (bring servos to 0°)
+      - 0x0010 = run game
+      - 0x0011 = run debug (optional target defined on [0x0101,0x1000])
+
+__ __ __ __   00 00 00 00   __ __ __ __   __ __ __ __
+              |---| |---|
+              TARGET ID
+              - 0-11 [0x0000, 0x1011] for each target (12)
+              - 12 (0x1100) for all targets
+              - 15 (0x1111) for controller itself
+                    |---|
+                    RESERVED
+
+__ __ __ __   __ __ __ __   00 00 00 00   __ __ __ __
+                            |---------|
+                            GAME RUN TIME
+                            - 10s increments (i.e. 0x00000001 = 1 x 10 = 10s, 0x00001111 = 15 x 10 = 150s or 2m30s)
+
+__ __ __ __   __ __ __ __   __ __ __ __   00 00 00 00
+                                          |---------|
+                                          RESERVED
