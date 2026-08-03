@@ -43,5 +43,5 @@ __ __ __ __   __ __ __ __   __ __ __ __   00 00 00 00
                                           - makes target move cycles a random speed between lvls 0-3, is checked every target move cycle
                                                 |---|
                                                 TARGET VISIBILITY
-                                                - % hidden in 10% increments (0 = visible, 100% = completely hidden, i.e. 0x0011 = 3, or 30%)
+                                                - % visible in 10% increments (0 = hidden, 100% = visible, i.e. 0x0011 = 3, or 30%)
 

@@ -1,5 +1,18 @@
 #include <Arduino.h>
-#include <Adafruit_NeoPixel.h>
+#include <Adafruit_PWMServoDriver.h>
+
+// ============================================================================
+// HARDWARE CONFIGURATION
+// ============================================================================
+// Enable/disable subsystems based on target hardware
+
+// LED System (requires WeMos D1 R32, ESP32, or similar with 520KB+ RAM)
+// Disable this for Arduino Uno R3 to preserve RAM for servo/game logic
+#define ENABLE_LED_SYSTEM false  // Set to true for ESP32/WeMos D1 R32, false for Uno R3
+
+#if ENABLE_LED_SYSTEM
+  #include <Adafruit_NeoPixel.h>
+#endif
 
 // ============================================================================
 // SHOOTING GALLERY CONTROLLER
@@ -21,6 +34,10 @@
 // - General mode can change at any time (IDLE ↔ RESET ↔ GAME ↔ DEBUG)
 // - Target configs can be updated mid-game (speed, juke %, visibility, etc.)
 // - Lighting can be changed on the fly
+//
+// HARDWARE MODES:
+// - ENABLE_LED_SYSTEM = false: Arduino Uno R3 compatible (servo + game logic only)
+// - ENABLE_LED_SYSTEM = true: Requires ESP32/WeMos D1 R32 (full LED + servo system)
 // ============================================================================
 
 // ============================================================================
@@ -91,6 +108,21 @@
 #define LED_PIN_2 4               // Targets 6, 7, 8
 #define LED_PIN_3 5               // Targets 9, 10, 11
 
+// Servo System Constants (Adafruit 16-Channel PWM Shield via I2C)
+#define SERVO_FREQ 50             // Standard servo frequency (50Hz)
+#define MAX_SERVO_SPEED 180       // Maximum speed in degrees/second
+#define SERVO_MIN_PULSE 150       // Minimum pulse length (approx -90°)
+#define SERVO_MAX_PULSE 600       // Maximum pulse length (approx +90°)
+
+// Servo Position Bounds (180° range: -90° to +90°)
+// HOME = 100% visible, target fully exposed
+// HIDDEN = 0% visible, target fully retracted
+#define TARGET_MOTOR_VISIBLE_BOUNDS 90   // +90° = HOME (100% visible) - CONFIGURABLE
+#define TARGET_MOTOR_HIDDEN_BOUNDS -90   // -90° = HIDDEN (0% visible)
+
+// Movement Speed Percentages (maps to TARGET MOVEMENT SPEED field)
+const uint8_t SPEED_PERCENTAGES[4] = {25, 50, 75, 100};  // 0=25%, 1=50%, 2=75%, 3=100%
+
 // ============================================================================
 // DATA STRUCTURES
 // ============================================================================
@@ -115,12 +147,20 @@ struct TargetProtocol {
 } __attribute__((packed));
 
 struct TargetState {
-  uint8_t active : 1;              // Boolean (1 bit)
-  uint8_t currentVisibility : 4;   // 0-10 (4 bits)
-  uint8_t movementSpeed : 2;       // 0-3 (2 bits)
-  uint8_t reserved : 1;            // Padding (1 bit)
-  uint32_t lastMoveTime;           // Milliseconds (32 bits)
+  uint8_t active : 1;              // Boolean: target is actively moving (1 bit)
+  uint8_t currentVisibility : 4;   // 0-10 visibility (0=visible, 10=100% hidden) (4 bits)
+  uint8_t movementSpeed : 2;       // 0-3 speed index (2 bits)
+  uint8_t isJuking : 1;            // Boolean: currently executing a juke (1 bit)
+  uint8_t movingToVisible : 1;     // Boolean: direction of movement (1 bit)
+  uint8_t reserved : 7;            // Padding (7 bits)
+  int8_t currentAngle;             // Current servo angle: -90 to +90 (8 bits)
+  int8_t targetAngle;              // Target servo angle for this move (8 bits)
+  uint8_t baseSpeed;               // Original speed from protocol (saved for reset after random) (8 bits)
+  uint32_t lastMoveTime;           // Timestamp of last movement (32 bits)
+  uint32_t nextCycleTime;          // Timestamp when next cycle should start (32 bits)
 } __attribute__((packed));
+
+#if ENABLE_LED_SYSTEM
 
 struct LightingProtocol {
   uint16_t protocolId : 4;       // 0-15 (4 bits)
@@ -144,6 +184,10 @@ struct LightingState {
   uint8_t blue;            // 0-255 (8 bits)
   uint8_t white;           // 0-255 (8 bits)
 } __attribute__((packed));
+
+#endif // ENABLE_LED_SYSTEM
+
+#if ENABLE_LED_SYSTEM
 
 // ============================================================================
 // LED PATTERN SYSTEM
@@ -179,6 +223,8 @@ struct PatternDescriptor {
   uint8_t w, r, g, b;     // WRGB color (4 bytes)
 } __attribute__((packed));  // Total: 8 bytes
 
+#endif // ENABLE_LED_SYSTEM
+
 // ============================================================================
 // GLOBAL STATE
 // ============================================================================
@@ -194,30 +240,37 @@ ControllerState currentState = STATE_IDLE;
 GeneralProtocol generalConfig;
 TargetProtocol targetConfigs[NUM_TARGETS];
 TargetState targetStates[NUM_TARGETS];
+
+#if ENABLE_LED_SYSTEM
 LightingState targetLightingStates[NUM_TARGETS];  // Per-target LED states
 LightingState arenaLightingState;                  // Arena relay lighting state
+#endif
+
 unsigned long gameStartTime = 0;
 unsigned long gameRunTime = 0;  // in milliseconds
+
+// Servo Control (Adafruit 16-Channel PWM Shield)
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+
+#if ENABLE_LED_SYSTEM
 
 // LED Pattern System State
 PatternDescriptor targetPatterns[NUM_TARGETS][3];  // 12 targets × 3 states = 36 patterns (288 bytes)
 PatternState currentPatternState[NUM_TARGETS];     // Current active pattern per target (12 bytes)
 bool ledPinDirty[NUM_LED_PINS] = {false};          // Dirty flags for 4 pins (4 bytes)
 
-// TEMPORARY: Test with limited LED count due to RAM constraints
-// Full system: 1881 LEDs × 4 bytes = 7.5KB per strip = 30KB total (Arduino has 2KB!)
-// Testing with 3 LEDs to isolate issue
-// NOTE: Arduino Uno CANNOT handle 7524 LEDs - need Teensy 4.1, ESP32, or Arduino Mega
-#define TEST_LEDS_PER_PIN 3  // Just 3 LEDs
-
 // NeoPixel Strip Objects (4 strips, one per data pin)
 // Protocol: NEO_WRGB + NEO_KHZ800 (verified with WS2814 LEDs)
+// NOTE: Requires WeMos D1 R32 or similar ESP32 board (520KB RAM)
+// Arduino Uno R3 (2KB RAM) cannot handle 30KB LED buffer allocation
 Adafruit_NeoPixel ledStrips[NUM_LED_PINS] = {
-  Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_0, NEO_WRGB + NEO_KHZ800),  // Targets 0,1,2
-  Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_1, NEO_WRGB + NEO_KHZ800),  // Targets 3,4,5
-  Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_2, NEO_WRGB + NEO_KHZ800),  // Targets 6,7,8
-  Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_3, NEO_WRGB + NEO_KHZ800)   // Targets 9,10,11
+  Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_0, NEO_WRGB + NEO_KHZ800),  // Targets 0,1,2
+  Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_1, NEO_WRGB + NEO_KHZ800),  // Targets 3,4,5
+  Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_2, NEO_WRGB + NEO_KHZ800),  // Targets 6,7,8
+  Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_3, NEO_WRGB + NEO_KHZ800)   // Targets 9,10,11
 };
+
+#endif // ENABLE_LED_SYSTEM
 
 // ============================================================================
 // PROTOCOL PARSING
@@ -241,6 +294,8 @@ void parseTargetProtocol(uint32_t word, TargetProtocol &config) {
   config.visibility = word & 0x0F;
 }
 
+#if ENABLE_LED_SYSTEM
+
 void parseLightingProtocol(uint32_t word1, uint32_t word2, uint32_t word3, LightingProtocol &config) {
   // Word 1: Protocol ID, Mode, Target ID, Brightness
   config.protocolId = (word1 >> 28) & 0x0F;
@@ -259,16 +314,43 @@ void parseLightingProtocol(uint32_t word1, uint32_t word2, uint32_t word3, Light
   config.white = word3 & 0xFF;
 }
 
+#endif // ENABLE_LED_SYSTEM
+
 // ============================================================================
 // FORWARD DECLARATIONS
 // ============================================================================
 
 void handleGeneralProtocol();
 void handleTargetProtocol(uint8_t targetId);
-void handleLightingProtocol(LightingProtocol &config);
 void updateTarget(uint8_t targetId);
 void checkTargetHits();
 void updateGameState();
+
+// Servo Control Functions
+void initializeServoSystem();
+void homeServo(uint8_t targetId);
+void setServoAngle(uint8_t targetId, int8_t angle);
+int8_t angleFromVisibility(uint8_t visibilityPercent);
+uint8_t visibilityFromAngle(int8_t angle);
+void startTargetMovement(uint8_t targetId);
+void stopTargetMovement(uint8_t targetId);
+void updateTargetMovement(uint8_t targetId);
+bool evaluateJuke(uint8_t jukePercent);
+bool evaluateRandomSpeed(uint8_t randomSpeedPercent);
+uint8_t getRandomSpeed();
+
+#if ENABLE_LED_SYSTEM
+
+// Lighting Protocol Handler
+void handleLightingProtocol(LightingProtocol &config);
+
+// LED Control Functions
+void markTargetLEDsDirty(uint8_t targetId);
+void updatePatternStates();
+void updateDirtyLEDs();
+void initializeDefaultPatterns();
+
+#endif // ENABLE_LED_SYSTEM
 
 // ============================================================================
 // DEBUG OUTPUT (JSON FORMAT)
@@ -304,6 +386,8 @@ void debugOutputTargetProtocol(const char* direction, TargetProtocol &config) {
   Serial.println(buffer);
 }
 
+#if ENABLE_LED_SYSTEM
+
 void debugOutputLightingProtocol(const char* direction, LightingProtocol &config) {
   char buffer[140];
   snprintf_P(buffer, sizeof(buffer),
@@ -313,6 +397,8 @@ void debugOutputLightingProtocol(const char* direction, LightingProtocol &config
     config.red, config.green, config.blue, config.white);
   Serial.println(buffer);
 }
+
+#endif // ENABLE_LED_SYSTEM
 
 void debugOutputReturnProtocol(const char* direction, uint8_t mode, uint8_t targetId, uint8_t status) {
   char buffer[96];
@@ -327,8 +413,11 @@ void debugOutputReturnProtocol(const char* direction, uint8_t mode, uint8_t targ
 // When debug is disabled, macros compile to nothing (zero overhead)
 #define debugOutputGeneralProtocol(direction, config) ((void)0)
 #define debugOutputTargetProtocol(direction, config) ((void)0)
-#define debugOutputLightingProtocol(direction, config) ((void)0)
 #define debugOutputReturnProtocol(direction, mode, targetId, status) ((void)0)
+
+#if ENABLE_LED_SYSTEM
+#define debugOutputLightingProtocol(direction, config) ((void)0)
+#endif
 
 #endif
 
@@ -411,6 +500,7 @@ void processSerialData() {
         }
         break;
         
+#if ENABLE_LED_SYSTEM
       case PROTOCOL_LIGHTING:
         {
           // Lighting protocol uses 3 words (96 bits total)
@@ -427,6 +517,7 @@ void processSerialData() {
           }
         }
         break;
+#endif // ENABLE_LED_SYSTEM
         
       default:
         // Unknown protocol
@@ -493,31 +584,42 @@ void handleTargetProtocol(uint8_t targetId) {
   
   switch (config.mode) {
     case TARGET_MODE_HALT:
-      state.active = false;
-      // TODO: Stop servo movement
+      // Stop servo movement and home to visible position
+      stopTargetMovement(targetId);
       break;
       
     case TARGET_MODE_START_MOVING:
-      // Update configuration even if already active
+      // Start or update continuous alternating movement (visible ↔ hidden)
+      // Configuration can be updated on-the-fly even if already active
       state.movementSpeed = config.movementSpeed;
+      state.baseSpeed = config.movementSpeed;  // Save base speed for random speed reset
       
-      // If transitioning from inactive to active, reset timer
+      // If transitioning from inactive to active, start movement
       if (!state.active) {
-        state.lastMoveTime = millis();
+        startTargetMovement(targetId);
       }
-      
-      state.active = true;
-      // TODO: Apply updated movement configuration
+      // If already active, new config will apply on next cycle
       break;
       
     case TARGET_MODE_ONE_TIME_MOVE:
-      // Immediately move to specified visibility position
-      state.currentVisibility = config.visibility;
-      state.active = false;  // One-time move doesn't continue
-      // TODO: Move servo to target position (config.visibility * 10% hidden)
+      // Immediately move to specified visibility position (0-10 = 0%-100% hidden)
+      // Cap visibility at 100%
+      uint8_t targetVisibility = (config.visibility > 10) ? 10 : config.visibility;
+      int8_t targetAngle = angleFromVisibility(targetVisibility);
+      
+      state.active = false;  // One-time move doesn't continue looping
+      setServoAngle(targetId, targetAngle);
+      
+      Serial.print(F("Target "));
+      Serial.print(targetId);
+      Serial.print(F(" moved to "));
+      Serial.print(targetVisibility * 10);
+      Serial.println(F("% hidden"));
       break;
   }
 }
+
+#if ENABLE_LED_SYSTEM
 
 void handleLightingProtocol(LightingProtocol &config) {
   // Lighting can be updated on the fly at any time
@@ -574,6 +676,8 @@ void handleLightingProtocol(LightingProtocol &config) {
   }
 }
 
+#endif // ENABLE_LED_SYSTEM
+
 // ============================================================================
 // GAME LOGIC
 // ============================================================================
@@ -595,10 +699,18 @@ void updateGameState() {
         // Check if game time expired
         if (elapsed >= gameRunTime) {
           currentState = STATE_IDLE;
+          
+          // Stop all active targets and home them
+          for (int i = 0; i < NUM_TARGETS; i++) {
+            if (targetStates[i].active) {
+              stopTargetMovement(i);
+            }
+          }
+          
           sendReturnProtocol(RETURN_MODE_END_OF_GAME, TARGET_ID_CONTROLLER, STATUS_IDLE);
         }
         
-        // TODO: Update active targets
+        // Update all active targets (servo movement + LED patterns)
         for (int i = 0; i < NUM_TARGETS; i++) {
           if (targetStates[i].active) {
             updateTarget(i);
@@ -614,24 +726,14 @@ void updateGameState() {
 }
 
 void updateTarget(uint8_t targetId) {
-  // NOTE: Always use latest targetConfigs - config can be updated on the fly
-  TargetProtocol &config = targetConfigs[targetId];
-  TargetState &state = targetStates[targetId];
+  // Update servo movement for this target
+  // This function is called every loop iteration for smooth motion
+  updateTargetMovement(targetId);
   
-  unsigned long currentTime = millis();
-  unsigned long timeSinceLastMove = currentTime - state.lastMoveTime;
-  
-  // Check if it's time for next move cycle
-  if (timeSinceLastMove >= (config.timeBetweenCycles * 1000UL)) {
-    state.lastMoveTime = currentTime;
-    
-    // TODO: Implement target movement logic
-    // - Determine if this cycle is a juke (based on config.jukePercent)
-    // - Check if random speed change applies (based on config.randomSpeedPercent)
-    // - Calculate movement speed (config.movementSpeed or random 0-3)
-    // - Update servo position based on visibility target
-    // - Apply transition animation
-  }
+#if ENABLE_LED_SYSTEM
+  // Update LED patterns for this target
+  markTargetLEDsDirty(targetId);
+#endif
 }
 
 void checkTargetHits() {
@@ -639,6 +741,276 @@ void checkTargetHits() {
   // When target is hit:
   // sendReturnProtocol(RETURN_MODE_TARGET_HIT, targetId, STATUS_HIT);
 }
+
+// ============================================================================
+// SERVO CONTROL SYSTEM
+// ============================================================================
+// Controls 12 target servos via Adafruit 16-Channel PWM Shield (I2C)
+// Each servo moves targets between VISIBLE (100%, home) and HIDDEN (0%)
+// Implements juke behavior (fake-out at 50% travel) and random speed changes
+// ============================================================================
+
+/**
+ * Initialize servo system and PWM shield
+ */
+void initializeServoSystem() {
+  pwm.begin();
+  pwm.setPWMFreq(SERVO_FREQ);  // Standard 50Hz for servos
+  
+  Serial.println(F("Servo system initialized"));
+  Serial.print(F("  Frequency: ")); Serial.print(SERVO_FREQ); Serial.println(F(" Hz"));
+  Serial.print(F("  Max Speed: ")); Serial.print(MAX_SERVO_SPEED); Serial.println(F(" deg/sec"));
+  Serial.print(F("  Visible Bounds: ")); Serial.print(TARGET_MOTOR_VISIBLE_BOUNDS); Serial.println(F("°"));
+  Serial.print(F("  Hidden Bounds: ")); Serial.print(TARGET_MOTOR_HIDDEN_BOUNDS); Serial.println(F("°"));
+  
+  // Home all servos to visible position
+  for (uint8_t i = 0; i < NUM_TARGETS; i++) {
+    homeServo(i);
+  }
+}
+
+/**
+ * Convert angle (-90 to +90) to PWM pulse width
+ */
+uint16_t angleToPulse(int8_t angle) {
+  // Map -90° to +90° → SERVO_MIN_PULSE to SERVO_MAX_PULSE
+  // Constrain angle to valid range
+  if (angle < -90) angle = -90;
+  if (angle > 90) angle = 90;
+  
+  // Linear mapping: -90 → MIN, 0 → MID, +90 → MAX
+  return map(angle, -90, 90, SERVO_MIN_PULSE, SERVO_MAX_PULSE);
+}
+
+/**
+ * Set servo to specific angle (-90 to +90 degrees)
+ */
+void setServoAngle(uint8_t targetId, int8_t angle) {
+  if (targetId >= NUM_TARGETS) return;
+  
+  uint16_t pulse = angleToPulse(angle);
+  pwm.setPWM(targetId, 0, pulse);
+  
+  // Update state
+  targetStates[targetId].currentAngle = angle;
+  targetStates[targetId].currentVisibility = visibilityFromAngle(angle);
+}
+
+/**
+ * Home servo to 100% visible position (default position)
+ */
+void homeServo(uint8_t targetId) {
+  if (targetId >= NUM_TARGETS) return;
+  
+  setServoAngle(targetId, TARGET_MOTOR_VISIBLE_BOUNDS);
+  
+  // Reset state
+  targetStates[targetId].active = false;
+  targetStates[targetId].isJuking = false;
+  targetStates[targetId].movingToVisible = false;
+  targetStates[targetId].targetAngle = TARGET_MOTOR_VISIBLE_BOUNDS;
+  
+  Serial.print(F("Target "));
+  Serial.print(targetId);
+  Serial.println(F(" homed to visible position"));
+}
+
+/**
+ * Convert visibility percentage (0-10) to servo angle
+ * 0 = 100% visible (TARGET_MOTOR_VISIBLE_BOUNDS)
+ * 10 = 100% hidden (TARGET_MOTOR_HIDDEN_BOUNDS)
+ */
+int8_t angleFromVisibility(uint8_t visibilityPercent) {
+  // Cap at 100% (value 10)
+  if (visibilityPercent > 10) visibilityPercent = 10;
+  
+  // Linear interpolation between visible and hidden bounds
+  // visibility 0 (0% hidden) → VISIBLE_BOUNDS
+  // visibility 10 (100% hidden) → HIDDEN_BOUNDS
+  return map(visibilityPercent, 0, 10, TARGET_MOTOR_VISIBLE_BOUNDS, TARGET_MOTOR_HIDDEN_BOUNDS);
+}
+
+/**
+ * Convert servo angle to visibility percentage (0-10)
+ */
+uint8_t visibilityFromAngle(int8_t angle) {
+  // Reverse mapping: angle → visibility (0-10)
+  int8_t visibility = map(angle, TARGET_MOTOR_VISIBLE_BOUNDS, TARGET_MOTOR_HIDDEN_BOUNDS, 0, 10);
+  
+  // Clamp to valid range
+  if (visibility < 0) visibility = 0;
+  if (visibility > 10) visibility = 10;
+  
+  return (uint8_t)visibility;
+}
+
+/**
+ * Start continuous target movement (alternating visible ↔ hidden)
+ */
+void startTargetMovement(uint8_t targetId) {
+  if (targetId >= NUM_TARGETS) return;
+  
+  TargetState &state = targetStates[targetId];
+  TargetProtocol &config = targetConfigs[targetId];
+  
+  state.active = true;
+  state.isJuking = false;
+  state.movingToVisible = (state.currentAngle != TARGET_MOTOR_VISIBLE_BOUNDS);  // Start by going visible if not already
+  state.baseSpeed = config.movementSpeed;
+  state.movementSpeed = config.movementSpeed;
+  state.lastMoveTime = millis();
+  state.nextCycleTime = millis() + (config.timeBetweenCycles * 1000UL);
+  
+  // Set initial target angle
+  state.targetAngle = state.movingToVisible ? TARGET_MOTOR_VISIBLE_BOUNDS : TARGET_MOTOR_HIDDEN_BOUNDS;
+  
+  Serial.print(F("Target "));
+  Serial.print(targetId);
+  Serial.println(F(" movement started"));
+}
+
+/**
+ * Stop target movement and home to visible position
+ */
+void stopTargetMovement(uint8_t targetId) {
+  if (targetId >= NUM_TARGETS) return;
+  
+  targetStates[targetId].active = false;
+  homeServo(targetId);
+}
+
+/**
+ * Evaluate if a juke should occur this cycle
+ * Returns true with probability based on jukePercent (0-10 = 0%-100%)
+ */
+bool evaluateJuke(uint8_t jukePercent) {
+  // Cap at 100%
+  if (jukePercent > 10) jukePercent = 10;
+  
+  // Convert to 0-100 range
+  uint8_t percent = jukePercent * 10;
+  
+  // Random 0-99, compare against percentage
+  return (random(100) < percent);
+}
+
+/**
+ * Evaluate if random speed change should occur
+ * Returns true with probability based on randomSpeedPercent (0-10 = 0%-100%)
+ */
+bool evaluateRandomSpeed(uint8_t randomSpeedPercent) {
+  // Cap at 100%
+  if (randomSpeedPercent > 10) randomSpeedPercent = 10;
+  
+  // Convert to 0-100 range
+  uint8_t percent = randomSpeedPercent * 10;
+  
+  // Random 0-99, compare against percentage
+  return (random(100) < percent);
+}
+
+/**
+ * Get random speed index (0-3)
+ */
+uint8_t getRandomSpeed() {
+  return random(4);  // Returns 0, 1, 2, or 3
+}
+
+/**
+ * Update target servo position during active movement
+ * Called every loop iteration for smooth motion
+ */
+void updateTargetMovement(uint8_t targetId) {
+  if (targetId >= NUM_TARGETS) return;
+  
+  TargetState &state = targetStates[targetId];
+  TargetProtocol &config = targetConfigs[targetId];
+  
+  if (!state.active) return;  // Not moving
+  
+  unsigned long currentTime = millis();
+  
+  // Check if movement cycle is complete and time for next cycle
+  if (currentTime >= state.nextCycleTime) {
+    // Start new movement cycle
+    
+    // 1. Evaluate JUKE for this cycle
+    bool shouldJuke = evaluateJuke(config.jukePercent);
+    state.isJuking = shouldJuke;
+    
+    // 2. Evaluate RANDOM SPEED CHANGE for this cycle
+    if (evaluateRandomSpeed(config.randomSpeedPercent)) {
+      state.movementSpeed = getRandomSpeed();
+    } else {
+      // Reset to base speed from protocol
+      state.movementSpeed = state.baseSpeed;
+    }
+    
+    // 3. Toggle direction (visible ↔ hidden)
+    state.movingToVisible = !state.movingToVisible;
+    
+    // 4. Set target angle for this cycle
+    state.targetAngle = state.movingToVisible ? TARGET_MOTOR_VISIBLE_BOUNDS : TARGET_MOTOR_HIDDEN_BOUNDS;
+    
+    // 5. Schedule next cycle
+    state.nextCycleTime = currentTime + (config.timeBetweenCycles * 1000UL);
+    
+    state.lastMoveTime = currentTime;
+  }
+  
+  // Smooth incremental movement towards target angle
+  if (state.currentAngle != state.targetAngle) {
+    unsigned long deltaTime = currentTime - state.lastMoveTime;
+    state.lastMoveTime = currentTime;
+    
+    // Calculate speed in degrees/second based on percentage
+    float speedPercent = SPEED_PERCENTAGES[state.movementSpeed] / 100.0f;
+    float degreesPerSecond = MAX_SERVO_SPEED * speedPercent;
+    
+    // Calculate movement delta for this frame
+    float degreesThisFrame = (degreesPerSecond * deltaTime) / 1000.0f;
+    
+    // Move towards target
+    int8_t delta = state.targetAngle - state.currentAngle;
+    int8_t step = (delta > 0) ? ceil(degreesThisFrame) : -ceil(degreesThisFrame);
+    
+    // Clamp step to not overshoot
+    if (abs(step) > abs(delta)) {
+      step = delta;
+    }
+    
+    int8_t newAngle = state.currentAngle + step;
+    
+    // JUKE LOGIC: Reverse at 50% travel
+    if (state.isJuking) {
+      int8_t startAngle = state.movingToVisible ? TARGET_MOTOR_HIDDEN_BOUNDS : TARGET_MOTOR_VISIBLE_BOUNDS;
+      int8_t halfwayAngle = (startAngle + state.targetAngle) / 2;
+      
+      // Check if we've passed halfway point
+      bool passedHalfway = false;
+      if (state.movingToVisible) {
+        passedHalfway = (state.currentAngle >= halfwayAngle && newAngle > halfwayAngle);
+      } else {
+        passedHalfway = (state.currentAngle <= halfwayAngle && newAngle < halfwayAngle);
+      }
+      
+      if (passedHalfway) {
+        // JUKE! Reverse direction back to start
+        state.targetAngle = startAngle;
+        state.isJuking = false;  // Juke complete
+        
+        Serial.print(F("Target "));
+        Serial.print(targetId);
+        Serial.println(F(" JUKED!"));
+      }
+    }
+    
+    // Apply movement
+    setServoAngle(targetId, newAngle);
+  }
+}
+
+#if ENABLE_LED_SYSTEM
 
 // ============================================================================
 // LED PATTERN GENERATION
@@ -893,6 +1265,8 @@ void initializeDefaultPatterns() {
   }
 }
 
+#endif // ENABLE_LED_SYSTEM
+
 // ============================================================================
 // ARDUINO SETUP & LOOP
 // ============================================================================
@@ -906,8 +1280,15 @@ void setup() {
     targetStates[i].active = false;
     targetStates[i].currentVisibility = 0;
     targetStates[i].movementSpeed = 0;
+    targetStates[i].isJuking = false;
+    targetStates[i].movingToVisible = false;
+    targetStates[i].currentAngle = TARGET_MOTOR_VISIBLE_BOUNDS;  // Start at home (visible)
+    targetStates[i].targetAngle = TARGET_MOTOR_VISIBLE_BOUNDS;
+    targetStates[i].baseSpeed = 0;
     targetStates[i].lastMoveTime = 0;
+    targetStates[i].nextCycleTime = 0;
     
+#if ENABLE_LED_SYSTEM
     // Initialize lighting states
     targetLightingStates[i].isOn = false;
     targetLightingStates[i].brightness = 0;
@@ -915,8 +1296,10 @@ void setup() {
     targetLightingStates[i].green = 0;
     targetLightingStates[i].blue = 0;
     targetLightingStates[i].white = 0;
+#endif
   }
   
+#if ENABLE_LED_SYSTEM
   // Initialize arena lighting
   arenaLightingState.isOn = false;
   arenaLightingState.brightness = 0;
@@ -927,109 +1310,37 @@ void setup() {
   
   // Initialize LED strips (WS2814 WRGB)
   Serial.print(F("Initializing "));
-  Serial.print(1);  // Only init pin 0 for testing
-  Serial.print(F(" LED strip with "));
-  Serial.print(TEST_LEDS_PER_PIN);
-  Serial.println(F(" LEDs..."));
+  Serial.print(NUM_LED_PINS);
+  Serial.print(F(" LED strips ("));
+  Serial.print(LEDS_PER_PIN);
+  Serial.println(F(" LEDs each)..."));
   
-  // Only initialize pin 0 to conserve RAM
-  ledStrips[0].begin();
-  ledStrips[0].setBrightness(128);  // 50% brightness
-  ledStrips[0].show();  // Initialize all pixels to 'off'
-  Serial.print(F("  Strip 0: "));
-  Serial.print(ledStrips[0].numPixels());
-  Serial.print(F(" LEDs = "));
-  Serial.print(ledStrips[0].numPixels() * 4);
-  Serial.println(F(" bytes RAM"));
+  for (uint8_t pin = 0; pin < NUM_LED_PINS; pin++) {
+    ledStrips[pin].begin();
+    ledStrips[pin].setBrightness(128);  // 50% brightness
+    ledStrips[pin].show();  // Initialize all pixels to 'off'
+    Serial.print(F("  Strip "));
+    Serial.print(pin);
+    Serial.print(F(": "));
+    Serial.print(ledStrips[pin].numPixels());
+    Serial.print(F(" LEDs = "));
+    Serial.print(ledStrips[pin].numPixels() * 4);
+    Serial.println(F(" bytes RAM"));
+  }
   
-  // Don't initialize other pins to save RAM
-  // for (uint8_t pin = 1; pin < NUM_LED_PINS; pin++) {
-  //   ledStrips[pin].begin();
-  // }
-  
-  Serial.println(F("LED strip initialized"));
+  Serial.println(F("LED strips initialized (NEO_WRGB + NEO_KHZ800)"));
   
   // Initialize LED patterns
   initializeDefaultPatterns();
-  
-  Serial.println(F("LED system initialized (NEO_WRGB + NEO_KHZ800)"));
-  
-  // ============================================================================
-  // TEMPORARY: PATTERN TEST - Cycle through all 3 target states
-  // ============================================================================
-  Serial.println(F(""));
-  Serial.println(F("=== PATTERN TEST MODE ==="));
-  Serial.println(F("Testing with 10 LEDs on pin D2"));
-  
-  // Simple direct test first - bypass pattern system
-  Serial.println(F("\n[DIRECT TEST] First 3 LEDs: red, green, white"));
-  // Color() takes (R, G, B, W) - library handles WRGB byte reordering
-  Serial.print(F("Strip has ")); Serial.print(ledStrips[0].numPixels()); Serial.println(F(" pixels"));
-  
-  // Explicitly clear ALL LEDs first
-  Serial.println(F("Clearing all LEDs..."));
-  ledStrips[0].clear();
-  ledStrips[0].show();
-  delay(1000);
-  
-  Serial.println(F("Setting pixels 0,1,2..."));
-  ledStrips[0].setPixelColor(0, ledStrips[0].Color(255, 0, 0, 0));  // Red
-  ledStrips[0].setPixelColor(1, ledStrips[0].Color(0, 255, 0, 0));  // Green
-  ledStrips[0].setPixelColor(2, ledStrips[0].Color(0, 0, 0, 255));  // White
-  Serial.println(F("Calling show()..."));
-  ledStrips[0].show();
-  Serial.println(F("Showing for 5 seconds..."));
-  Serial.println(F("CHECK: Do ONLY the first 3 LEDs light up?"));
-  delay(5000);
-  Serial.println(F("Clearing..."));
-  ledStrips[0].clear();
-  ledStrips[0].show();
-  delay(1000);
-  
-  Serial.println(F("\n[PATTERN TEST] Cycling states..."));
-  
-  // Test pattern cycling - show all 3 states for target 0
-  for (int cycle = 0; cycle < 2; cycle++) {
-    // IDLE state (cyan solid)
-    Serial.print(F("\nCycle ")); Serial.print(cycle + 1);
-    Serial.println(F(": IDLE (cyan solid)"));
-    currentPatternState[0] = PATTERN_STATE_IDLE;
-    updateLEDPin(0);  // Direct update
-    delay(3000);
-    
-    // MOVING state (green chase)
-    Serial.println(F("State: MOVING (green chase)"));
-    currentPatternState[0] = PATTERN_STATE_MOVING;
-    for (int i = 0; i < 30; i++) {  // Run chase for 3 seconds
-      updateLEDPin(0);  // Update every frame
-      delay(100);
-    }
-    
-    // HIT state (red strobe)
-    Serial.println(F("State: HIT (red strobe)"));
-    currentPatternState[0] = PATTERN_STATE_HIT;
-    for (int i = 0; i < 30; i++) {  // Run strobe for 3 seconds
-      updateLEDPin(0);  // Update every frame
-      delay(100);
-    }
-  }
-  
-  // Reset to IDLE
-  Serial.println(F("\nResetting to IDLE"));
-  currentPatternState[0] = PATTERN_STATE_IDLE;
-  updateLEDPin(0);
-  
-  Serial.println(F("Pattern test complete"));
-  // ============================================================================
-  // END OF TEMPORARY TEST
-  // ============================================================================
+  Serial.println(F("LED patterns initialized"));
+#endif // ENABLE_LED_SYSTEM
   
   Serial.println(F("Ready for operation"));
-  // ============================================================================
-  // END TEMPORARY DIAGNOSTIC
-  // ============================================================================
   
-  // TODO: Initialize servos, sensors, and other hardware
+  // Initialize servo system
+  initializeServoSystem();
+  
+  // TODO: Initialize sensors and other hardware
   
   // Set initial state
   currentState = STATE_IDLE;
@@ -1053,6 +1364,7 @@ void loop() {
   // Check for target hits
   checkTargetHits();
   
+#if ENABLE_LED_SYSTEM
   // Update LED pattern states based on target activity
   updatePatternStates();
   
@@ -1092,6 +1404,7 @@ void loop() {
   
   // Update LEDs (only dirty pins are refreshed)
   updateDirtyLEDs();
+#endif // ENABLE_LED_SYSTEM
   
   // No delay - run at full speed for maximum responsiveness
 }
