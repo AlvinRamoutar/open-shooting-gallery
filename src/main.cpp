@@ -204,15 +204,13 @@ PatternDescriptor targetPatterns[NUM_TARGETS][3];  // 12 targets × 3 states = 3
 PatternState currentPatternState[NUM_TARGETS];     // Current active pattern per target (12 bytes)
 bool ledPinDirty[NUM_LED_PINS] = {false};          // Dirty flags for 4 pins (4 bytes)
 
-// TEMPORARY: Test with minimal LEDs to isolate protocol issue
-#define TEST_LED_COUNT 3  // Just test 3 LEDs for diagnostics
-
 // NeoPixel Strip Objects (4 strips, one per data pin)
+// Protocol: NEO_WRGB + NEO_KHZ800 (verified with WS2814 LEDs)
 Adafruit_NeoPixel ledStrips[NUM_LED_PINS] = {
-  Adafruit_NeoPixel(TEST_LED_COUNT, LED_PIN_0, NEO_GRB + NEO_KHZ800),  // Try GRB (most common)
-  Adafruit_NeoPixel(TEST_LED_COUNT, LED_PIN_1, NEO_WRGB + NEO_KHZ800),
-  Adafruit_NeoPixel(TEST_LED_COUNT, LED_PIN_2, NEO_WRGB + NEO_KHZ800),
-  Adafruit_NeoPixel(TEST_LED_COUNT, LED_PIN_3, NEO_WRGB + NEO_KHZ800)
+  Adafruit_NeoPixel(LEDS_PER_TARGET * 3, LED_PIN_0, NEO_WRGB + NEO_KHZ800),  // Targets 0,1,2
+  Adafruit_NeoPixel(LEDS_PER_TARGET * 3, LED_PIN_1, NEO_WRGB + NEO_KHZ800),  // Targets 3,4,5
+  Adafruit_NeoPixel(LEDS_PER_TARGET * 3, LED_PIN_2, NEO_WRGB + NEO_KHZ800),  // Targets 6,7,8
+  Adafruit_NeoPixel(LEDS_PER_TARGET * 3, LED_PIN_3, NEO_WRGB + NEO_KHZ800)   // Targets 9,10,11
 };
 
 // ============================================================================
@@ -928,93 +926,54 @@ void setup() {
   // Initialize LED patterns
   initializeDefaultPatterns();
   
+  Serial.println(F("LED system initialized (NEO_WRGB + NEO_KHZ800)"));
+  
   // ============================================================================
-  // LED PROTOCOL TESTS
+  // TEMPORARY: PATTERN TEST - Cycle through all 3 target states
   // ============================================================================
-  Serial.println(F("=== LED PROTOCOL TESTS ==="));
-  Serial.println(F("Testing 3 LEDs with 5 different protocols..."));
-  delay(1000);
+  Serial.println(F(""));
+  Serial.println(F("=== PATTERN TEST MODE ==="));
+  Serial.println(F("Cycling through target states..."));
   
-  // Test 1: NEO_GRB + 800kHz (WS2812B - most common)
-  Serial.println(F("[TEST 1] NEO_GRB 800kHz"));
-  {
-    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_GRB + NEO_KHZ800);
-    test.begin();
-    test.setBrightness(255);
-    test.setPixelColor(0, test.Color(255, 0, 0));  // Red
-    test.setPixelColor(1, test.Color(0, 255, 0));  // Green
-    test.setPixelColor(2, test.Color(0, 0, 255));  // Blue
-    test.show();
+  // Test pattern cycling - show all 3 states for target 0
+  for (int cycle = 0; cycle < 3; cycle++) {
+    // IDLE state (cyan solid)
+    Serial.println(F("State: IDLE (cyan)"));
+    currentPatternState[0] = PATTERN_STATE_IDLE;
+    markTargetLEDsDirty(0);
+    updateDirtyLEDs();
     delay(3000);
-    test.clear();
-    test.show();
+    
+    // MOVING state (green chase)
+    Serial.println(F("State: MOVING (green chase)"));
+    currentPatternState[0] = PATTERN_STATE_MOVING;
+    markTargetLEDsDirty(0);
+    for (int i = 0; i < 30; i++) {  // Run chase for 3 seconds
+      updateDirtyLEDs();
+      delay(100);
+    }
+    
+    // HIT state (red strobe)
+    Serial.println(F("State: HIT (red strobe)"));
+    currentPatternState[0] = PATTERN_STATE_HIT;
+    markTargetLEDsDirty(0);
+    for (int i = 0; i < 30; i++) {  // Run strobe for 3 seconds
+      updateDirtyLEDs();
+      delay(100);
+    }
   }
   
-  // Test 2: NEO_GRBW + 800kHz (SK6812 RGBW)
-  Serial.println(F("[TEST 2] NEO_GRBW 800kHz"));
-  {
-    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_GRBW + NEO_KHZ800);
-    test.begin();
-    test.setBrightness(255);
-    test.setPixelColor(0, test.Color(255, 0, 0, 0));     // Red
-    test.setPixelColor(1, test.Color(0, 255, 0, 0));     // Green
-    test.setPixelColor(2, test.Color(0, 0, 0, 255));     // White
-    test.show();
-    delay(3000);
-    test.clear();
-    test.show();
-  }
+  // Reset to IDLE
+  currentPatternState[0] = PATTERN_STATE_IDLE;
+  markTargetLEDsDirty(0);
+  updateDirtyLEDs();
   
-  // Test 3: NEO_WRGB + 800kHz (WS2814 per datasheet)
-  Serial.println(F("[TEST 3] NEO_WRGB 800kHz (WS2814)"));
-  {
-    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_WRGB + NEO_KHZ800);
-    test.begin();
-    test.setBrightness(255);
-    test.setPixelColor(0, test.Color(255, 0, 0, 0));     // Red
-    test.setPixelColor(1, test.Color(0, 255, 0, 0));     // Green
-    test.setPixelColor(2, test.Color(0, 0, 0, 255));     // White
-    test.show();
-    delay(3000);
-    test.clear();
-    test.show();
-  }
-  
-  // Test 4: NEO_RGB + 400kHz (WS2811 older/slower)
-  Serial.println(F("[TEST 4] NEO_RGB 400kHz"));
-  {
-    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_RGB + NEO_KHZ400);
-    test.begin();
-    test.setBrightness(255);
-    test.setPixelColor(0, test.Color(255, 0, 0));     // Red
-    test.setPixelColor(1, test.Color(0, 255, 0));     // Green
-    test.setPixelColor(2, test.Color(0, 0, 255));     // Blue
-    test.show();
-    delay(3000);
-    test.clear();
-    test.show();
-  }
-  
-  // Test 5: NEO_GRB + 400kHz
-  Serial.println(F("[TEST 5] NEO_GRB 400kHz"));
-  {
-    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_GRB + NEO_KHZ400);
-    test.begin();
-    test.setBrightness(255);
-    test.setPixelColor(0, test.Color(255, 0, 0));     // Red
-    test.setPixelColor(1, test.Color(0, 255, 0));     // Green
-    test.setPixelColor(2, test.Color(0, 0, 255));     // Blue
-    test.show();
-    delay(3000);
-    test.clear();
-    test.show();
-  }
-  
-  Serial.println(F("=== TESTS COMPLETE ==="));
-  Serial.println(F("If no LEDs lit: add 330ohm resistor D2->DI"));
+  Serial.println(F("Pattern test complete"));
   // ============================================================================
-  // END OF TESTS
+  // END OF TEMPORARY TEST
   // ============================================================================
+  
+  Serial.println(F("Ready for operation"));
   // ============================================================================
   // END TEMPORARY DIAGNOSTIC
   // ============================================================================
