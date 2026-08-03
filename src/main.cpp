@@ -925,6 +925,14 @@ void setup() {
   // Initialize LED patterns
   initializeDefaultPatterns();
   
+  // TEMPORARY: Startup LED test - flash Pin D2 white to verify hardware
+  ledStrips[0].fill(ledStrips[0].Color(32, 32, 32, 32));  // Dim WRGB white
+  ledStrips[0].show();
+  delay(1000);  // Hold for 1 second
+  ledStrips[0].clear();
+  ledStrips[0].show();
+  // END TEMPORARY
+  
   // TODO: Initialize servos, sensors, and other hardware
   
   // Set initial state
@@ -948,6 +956,9 @@ void loop() {
   
   // Check for target hits
   checkTargetHits();
+  
+  // Update LED pattern states based on target activity
+  updatePatternStates();
   
   // ============================================================================
   // TEMPORARY: LED PATTERN TEST - Remove after hardware testing
@@ -980,9 +991,6 @@ void loop() {
   // ============================================================================
   // END TEMPORARY TEST
   // ============================================================================
-  
-  // Update LED pattern states based on target activity
-  updatePatternStates();
   
   // Update LEDs (only dirty pins are refreshed)
   updateDirtyLEDs();
