@@ -935,12 +935,30 @@ void setup() {
   Serial.println(F("=== PATTERN TEST MODE ==="));
   Serial.println(F("Cycling through target states..."));
   
+  // Simple direct test first - bypass pattern system
+  Serial.println(F("Direct test: First 3 LEDs red"));
+  ledStrips[0].setPixelColor(0, ledStrips[0].Color(255, 0, 0, 0));  // Red
+  ledStrips[0].setPixelColor(1, ledStrips[0].Color(0, 255, 0, 0));  // Green
+  ledStrips[0].setPixelColor(2, ledStrips[0].Color(0, 0, 0, 255));  // White
+  ledStrips[0].show();
+  delay(3000);
+  ledStrips[0].clear();
+  ledStrips[0].show();
+  
+  Serial.println(F("Now testing pattern system..."));
+  
   // Test pattern cycling - show all 3 states for target 0
   for (int cycle = 0; cycle < 3; cycle++) {
     // IDLE state (cyan solid)
-    Serial.println(F("State: IDLE (cyan)"));
+    Serial.print(F("Cycle ")); Serial.print(cycle + 1);
+    Serial.println(F(" - State: IDLE (cyan)"));
     currentPatternState[0] = PATTERN_STATE_IDLE;
     markTargetLEDsDirty(0);
+    Serial.print(F("Dirty flags: "));
+    for (int i = 0; i < NUM_LED_PINS; i++) {
+      Serial.print(ledPinDirty[i] ? '1' : '0');
+    }
+    Serial.println();
     updateDirtyLEDs();
     delay(3000);
     
