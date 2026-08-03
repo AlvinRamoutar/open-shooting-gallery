@@ -204,20 +204,20 @@ PatternDescriptor targetPatterns[NUM_TARGETS][3];  // 12 targets × 3 states = 3
 PatternState currentPatternState[NUM_TARGETS];     // Current active pattern per target (12 bytes)
 bool ledPinDirty[NUM_LED_PINS] = {false};          // Dirty flags for 4 pins (4 bytes)
 
-// TEMPORARY: Test with single isolated NeoPixel object
-// Testing if array of NeoPixel objects is causing interference
-#define TEST_LEDS_PER_PIN 3  // Just 3 LEDs to test
+// TEMPORARY: Test with limited LED count due to RAM constraints
+// Full system: 1881 LEDs × 4 bytes = 7.5KB per strip = 30KB total (Arduino has 2KB!)
+// Testing with 3 LEDs to isolate issue
+// NOTE: Arduino Uno CANNOT handle 7524 LEDs - need Teensy 4.1, ESP32, or Arduino Mega
+#define TEST_LEDS_PER_PIN 3  // Just 3 LEDs
 
-// Single NeoPixel object for testing (not an array)
-Adafruit_NeoPixel* testStrip = nullptr;
-
-// Keep the array declaration but don't use it
-// Adafruit_NeoPixel ledStrips[NUM_LED_PINS] = {
-//   Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_0, NEO_WRGB + NEO_KHZ800),
-//   Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_1, NEO_WRGB + NEO_KHZ800),
-//   Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_2, NEO_WRGB + NEO_KHZ800),
-//   Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_3, NEO_WRGB + NEO_KHZ800)
-// };
+// NeoPixel Strip Objects (4 strips, one per data pin)
+// Protocol: NEO_WRGB + NEO_KHZ800 (verified with WS2814 LEDs)
+Adafruit_NeoPixel ledStrips[NUM_LED_PINS] = {
+  Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_0, NEO_WRGB + NEO_KHZ800),  // Targets 0,1,2
+  Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_1, NEO_WRGB + NEO_KHZ800),  // Targets 3,4,5
+  Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_2, NEO_WRGB + NEO_KHZ800),  // Targets 6,7,8
+  Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_3, NEO_WRGB + NEO_KHZ800)   // Targets 9,10,11
+};
 
 // ============================================================================
 // PROTOCOL PARSING
