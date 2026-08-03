@@ -204,10 +204,11 @@ PatternDescriptor targetPatterns[NUM_TARGETS][3];  // 12 targets × 3 states = 3
 PatternState currentPatternState[NUM_TARGETS];     // Current active pattern per target (12 bytes)
 bool ledPinDirty[NUM_LED_PINS] = {false};          // Dirty flags for 4 pins (4 bytes)
 
-// TEMPORARY: Test with small LED count due to RAM constraints
+// TEMPORARY: Test with limited LED count due to RAM constraints
 // Full system: 1881 LEDs × 4 bytes = 7.5KB per strip = 30KB total (Arduino has 2KB!)
-// Need streaming approach or external controller for full 7524 LED system
-#define TEST_LEDS_PER_PIN 10  // Just 10 LEDs for testing
+// Testing with 200 LEDs per pin (one-third of a full target)
+// NOTE: For 7524 LEDs, you'll need Arduino Mega (8KB RAM) or external LED controller
+#define TEST_LEDS_PER_PIN 200  // ~800 bytes RAM per pin, 3.2KB total for 4 pins
 
 // NeoPixel Strip Objects (4 strips, one per data pin)
 // Protocol: NEO_WRGB + NEO_KHZ800 (verified with WS2814 LEDs)
@@ -858,7 +859,7 @@ void initializeDefaultPatterns() {
     targetPatterns[i][PATTERN_STATE_MOVING] = {
       .type = PATTERN_CHASE,
       .speed = 8,         // Medium speed
-      .param1 = 3,        // Tail length (short for testing with 10 LEDs)
+      .param1 = 20,       // Tail length (good for 200 LEDs)
       .brightness = 255,  // Full brightness
       .w = 0,
       .r = 0,
@@ -872,7 +873,7 @@ void initializeDefaultPatterns() {
     targetPatterns[i][PATTERN_STATE_HIT] = {
       .type = PATTERN_STROBE,
       .speed = 10,        // Fast
-      .param1 = 2,        // 2 blinks per second (slower for testing)
+      .param1 = 5,        // 5 blinks per second
       .brightness = 255,
       .w = 0,
       .r = 255,           // Red
@@ -926,22 +927,27 @@ void setup() {
   
   // Initialize LED strips (WS2814 WRGB)
   Serial.print(F("Initializing "));
-  Serial.print(NUM_LED_PINS);
-  Serial.print(F(" LED strips with "));
+  Serial.print(1);  // Only init pin 0 for testing
+  Serial.print(F(" LED strip with "));
   Serial.print(TEST_LEDS_PER_PIN);
-  Serial.println(F(" LEDs each..."));
+  Serial.println(F(" LEDs..."));
   
-  for (uint8_t pin = 0; pin < NUM_LED_PINS; pin++) {
-    ledStrips[pin].begin();
-    ledStrips[pin].setBrightness(128);  // 50% brightness
-    ledStrips[pin].show();  // Initialize all pixels to 'off'
-    Serial.print(F("  Strip "));
-    Serial.print(pin);
-    Serial.print(F(": "));
-    Serial.print(ledStrips[pin].numPixels());
-    Serial.println(F(" LEDs"));
-  }
-  Serial.println(F("LED strips initialized"));
+  // Only initialize pin 0 to conserve RAM
+  ledStrips[0].begin();
+  ledStrips[0].setBrightness(128);  // 50% brightness
+  ledStrips[0].show();  // Initialize all pixels to 'off'
+  Serial.print(F("  Strip 0: "));
+  Serial.print(ledStrips[0].numPixels());
+  Serial.print(F(" LEDs = "));
+  Serial.print(ledStrips[0].numPixels() * 4);
+  Serial.println(F(" bytes RAM"));
+  
+  // Don't initialize other pins to save RAM
+  // for (uint8_t pin = 1; pin < NUM_LED_PINS; pin++) {
+  //   ledStrips[pin].begin();
+  // }
+  
+  Serial.println(F("LED strip initialized"));
   
   // Initialize LED patterns
   initializeDefaultPatterns();
@@ -990,13 +996,7 @@ void setup() {
     // HIT state (red strobe)
     Serial.println(F("State: HIT (red strobe)"));
     currentPatternState[0] = PATTERN_STATE_HIT;
-    Serial.print(F("Pattern: type=")); Serial.print(targetPatterns[0][PATTERN_STATE_HIT].type);
-    Serial.print(F(" r=")); Serial.print(targetPatterns[0][PATTERN_STATE_HIT].r);
-    Serial.print(F(" rate=")); Serial.println(targetPatterns[0][PATTERN_STATE_HIT].param1);
     for (int i = 0; i < 30; i++) {  // Run strobe for 3 seconds
-      if (i == 0) {
-        Serial.print(F("Strobe frame 0, millis=")); Serial.println(millis());
-      }
       updateLEDPin(0);  // Update every frame
       delay(100);
     }
