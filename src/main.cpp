@@ -925,13 +925,66 @@ void setup() {
   // Initialize LED patterns
   initializeDefaultPatterns();
   
-  // TEMPORARY: Startup LED test - flash Pin D2 white to verify hardware
-  ledStrips[0].fill(ledStrips[0].Color(32, 32, 32, 32));  // Dim WRGB white
+  // ============================================================================
+  // TEMPORARY: DIAGNOSTIC LED TEST - Tests first 10 LEDs only
+  // ============================================================================
+  Serial.println("DIAGNOSTIC: Starting LED test on Pin D2...");
+  Serial.println("Testing first 10 LEDs with different patterns:");
+  
+  // Test 1: Red on first 10 LEDs (RGB order)
+  Serial.println("Test 1: RED (R=255, G=0, B=0)");
+  for (int i = 0; i < 10; i++) {
+    ledStrips[0].setPixelColor(i, ledStrips[0].Color(255, 0, 0, 0));  // R, G, B, W
+  }
   ledStrips[0].show();
-  delay(1000);  // Hold for 1 second
+  delay(2000);
+  
+  // Test 2: Green on first 10 LEDs
+  Serial.println("Test 2: GREEN (R=0, G=255, B=0)");
+  for (int i = 0; i < 10; i++) {
+    ledStrips[0].setPixelColor(i, ledStrips[0].Color(0, 255, 0, 0));  // R, G, B, W
+  }
+  ledStrips[0].show();
+  delay(2000);
+  
+  // Test 3: Blue on first 10 LEDs
+  Serial.println("Test 3: BLUE (R=0, G=0, B=255)");
+  for (int i = 0; i < 10; i++) {
+    ledStrips[0].setPixelColor(i, ledStrips[0].Color(0, 0, 255, 0));  // R, G, B, W
+  }
+  ledStrips[0].show();
+  delay(2000);
+  
+  // Test 4: White channel on first 10 LEDs
+  Serial.println("Test 4: WHITE channel (W=255)");
+  for (int i = 0; i < 10; i++) {
+    ledStrips[0].setPixelColor(i, ledStrips[0].Color(0, 0, 0, 255));  // R, G, B, W
+  }
+  ledStrips[0].show();
+  delay(2000);
+  
+  // Test 5: All channels dim
+  Serial.println("Test 5: ALL CHANNELS (R=64, G=64, B=64, W=64)");
+  for (int i = 0; i < 10; i++) {
+    ledStrips[0].setPixelColor(i, ledStrips[0].Color(64, 64, 64, 64));  // R, G, B, W
+  }
+  ledStrips[0].show();
+  delay(2000);
+  
+  // Clear
+  Serial.println("Test 6: OFF (clearing all)");
   ledStrips[0].clear();
   ledStrips[0].show();
-  // END TEMPORARY
+  delay(1000);
+  
+  Serial.println("DIAGNOSTIC: Test complete. If you saw nothing, check:");
+  Serial.println("  1. Data wire connected to D2 (Arduino pin 2)");
+  Serial.println("  2. Ground common between Arduino and LED power supply");
+  Serial.println("  3. 5V logic level on data line");
+  Serial.println("  4. Strip might need different timing (SK6812/WS2812B)");
+  // ============================================================================
+  // END TEMPORARY DIAGNOSTIC
+  // ============================================================================
   
   // TODO: Initialize servos, sensors, and other hardware
   
@@ -961,8 +1014,9 @@ void loop() {
   updatePatternStates();
   
   // ============================================================================
-  // TEMPORARY: LED PATTERN TEST - Remove after hardware testing
+  // TEMPORARY: LED PATTERN TEST - DISABLED FOR DIAGNOSTICS
   // ============================================================================
+  /*
   // Cycle through pattern states every 3 seconds to test all patterns
   static uint32_t lastPatternChange = 0;
   static uint8_t testPatternIndex = 0;
@@ -988,6 +1042,7 @@ void loop() {
     Serial.println(stateNames[testState]);
     #endif
   }
+  */
   // ============================================================================
   // END TEMPORARY TEST
   // ============================================================================
