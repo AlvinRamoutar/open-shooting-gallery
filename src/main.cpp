@@ -1,33 +1,548 @@
 #include <Arduino.h>
 
-void morse_s();
+// ============================================================================
+// SHOOTING GALLERY CONTROLLER
+// ============================================================================
+// This controller manages a 12-target shooting gallery system.
+// 
+// OPERATION:
+// - Controller starts in IDLE state
+// - Server sends protocol payloads over serial (115200 baud)
+// - All protocols can be updated ON THE FLY during gameplay
+// - New configurations immediately override previous settings
+//
+// PROTOCOL SEQUENCE:
+// - GENERAL protocol (mandatory, sets mode and game time)
+// - TARGET protocols (up to 12, one per target)
+// - LIGHTING protocols (optional, for LED control)
+//
+// DYNAMIC UPDATES:
+// - General mode can change at any time (IDLE ↔ RESET ↔ GAME ↔ DEBUG)
+// - Target configs can be updated mid-game (speed, juke %, visibility, etc.)
+// - Lighting can be changed on the fly
+// ============================================================================
 
-void morse_o();
+// ============================================================================
+// PROTOCOL CONSTANTS
+// ============================================================================
 
-void morse_s() {
-  for(int i = 0; i < 3; i++) {
-    digitalWrite(LED_BUILTIN, HIGH);
-    delay(500);
-    digitalWrite(LED_BUILTIN, LOW);
-    delay(500);
+// Protocol IDs
+#define PROTOCOL_GENERAL  0x0
+#define PROTOCOL_TARGET   0x1
+#define PROTOCOL_LIGHTING 0x2
+#define PROTOCOL_RETURN   0x6
+
+// General Protocol - Modes
+#define GENERAL_MODE_IDLE         0x0
+#define GENERAL_MODE_TARGET_RESET 0x1
+#define GENERAL_MODE_RUN_GAME     0x2
+#define GENERAL_MODE_RUN_DEBUG    0x3
+
+// Target Protocol - Modes
+#define TARGET_MODE_HALT          0x0
+#define TARGET_MODE_START_MOVING  0x1
+#define TARGET_MODE_ONE_TIME_MOVE 0x2
+
+// Return Protocol - Modes
+#define RETURN_MODE_IDLE               0x0
+#define RETURN_MODE_ACK_TARGET_RESET   0x1
+#define RETURN_MODE_ACK_RUN_GAME       0x2
+#define RETURN_MODE_ACK_RUN_DEBUG      0x3
+#define RETURN_MODE_TARGET_HIT         0x4
+#define RETURN_MODE_END_OF_GAME        0x5
+#define RETURN_MODE_STDOUT             0x9
+#define RETURN_MODE_ERROR              0xA
+
+// Return Protocol - Status
+#define STATUS_IDLE                    0x0
+#define STATUS_HIT                     0x1
+#define STATUS_STUCK                   0x2
+#define STATUS_LOST_CONNECTIVITY       0x3
+#define STATUS_LOST_SERVER             0x4
+
+// Lighting Protocol - Modes
+#define LIGHTING_MODE_OFF 0x0
+#define LIGHTING_MODE_ON  0x1
+
+// Lighting Protocol - Target IDs
+#define LIGHTING_ID_ALL_TARGETS 12  // All target LEDs via SPI
+#define LIGHTING_ID_ARENA       13  // Arena lighting via relay
+#define LIGHTING_ID_ALL         15  // ALL lighting (targets + arena)
+
+// System Constants
+#define NUM_TARGETS 12
+#define TARGET_ID_ALL 13
+#define TARGET_ID_CONTROLLER 15
+#define LEDS_PER_TARGET 512
+#define TOTAL_LEDS 8960  // 512 LEDs × 12 targets
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
+struct GeneralProtocol {
+  uint8_t protocolId;
+  uint8_t mode;
+  uint8_t targetId;
+  uint8_t gameRunTime;  // in 10s increments
+};
+
+struct TargetProtocol {
+  uint8_t protocolId;
+  uint8_t mode;
+  uint8_t targetId;
+  uint8_t movementSpeed;         // 0-3
+  uint8_t timeBetweenCycles;     // seconds
+  uint8_t jukePercent;           // in 10% increments
+  uint8_t randomSpeedPercent;    // in 10% increments
+  uint8_t visibility;            // % hidden in 10% increments
+};
+
+struct TargetState {
+  bool active;
+  uint8_t currentVisibility;
+  uint8_t movementSpeed;
+  unsigned long lastMoveTime;
+  // Add more state tracking as needed
+};
+
+struct LightingProtocol {
+  uint8_t protocolId;
+  uint8_t mode;              // 0 = off, 1 = on
+  uint8_t targetId;          // 0-11 = specific target, 12 = all targets, 13 = arena, 15 = all lighting
+  uint8_t brightness;        // 0-100 (decimal percentage)
+  uint16_t startLedRange;    // 0-511 within target segment
+  uint16_t endLedRange;      // 0-511 within target segment
+  uint8_t red;               // 0-255
+  uint8_t green;             // 0-255
+  uint8_t blue;              // 0-255
+  uint8_t white;             // 0-255
+};
+
+struct LightingState {
+  bool isOn;
+  uint8_t brightness;
+  uint8_t red;
+  uint8_t green;
+  uint8_t blue;
+  uint8_t white;
+};
+
+// ============================================================================
+// GLOBAL STATE
+// ============================================================================
+
+enum ControllerState {
+  STATE_IDLE,
+  STATE_TARGET_RESET,
+  STATE_RUNNING_GAME,
+  STATE_RUNNING_DEBUG
+};
+
+ControllerState currentState = STATE_IDLE;
+GeneralProtocol generalConfig;
+TargetProtocol targetConfigs[NUM_TARGETS];
+TargetState targetStates[NUM_TARGETS];
+LightingState targetLightingStates[NUM_TARGETS];  // Per-target LED states
+LightingState arenaLightingState;                  // Arena relay lighting state
+unsigned long gameStartTime = 0;
+unsigned long gameRunTime = 0;  // in milliseconds
+
+// ============================================================================
+// PROTOCOL PARSING
+// ============================================================================
+
+void parseGeneralProtocol(uint32_t word, GeneralProtocol &config) {
+  config.protocolId = (word >> 28) & 0x0F;
+  config.mode = (word >> 24) & 0x0F;
+  config.targetId = (word >> 20) & 0x0F;
+  config.gameRunTime = (word >> 8) & 0xFF;
+}
+
+void parseTargetProtocol(uint32_t word, TargetProtocol &config) {
+  config.protocolId = (word >> 28) & 0x0F;
+  config.mode = (word >> 24) & 0x0F;
+  config.targetId = (word >> 20) & 0x0F;
+  config.movementSpeed = (word >> 18) & 0x03;
+  config.timeBetweenCycles = (word >> 12) & 0x0F;
+  config.jukePercent = (word >> 8) & 0x0F;
+  config.randomSpeedPercent = (word >> 4) & 0x0F;
+  config.visibility = word & 0x0F;
+}
+
+void parseLightingProtocol(uint32_t word1, uint32_t word2, uint32_t word3, LightingProtocol &config) {
+  // Word 1: Protocol ID, Mode, Target ID, Brightness
+  config.protocolId = (word1 >> 28) & 0x0F;
+  config.mode = (word1 >> 24) & 0x0F;
+  config.targetId = (word1 >> 20) & 0x0F;
+  config.brightness = (word1 >> 8) & 0xFF;
+  
+  // Word 2: Start LED Range, End LED Range
+  config.startLedRange = (word2 >> 16) & 0xFFFF;
+  config.endLedRange = word2 & 0xFFFF;
+  
+  // Word 3: RGBW colors
+  config.red = (word3 >> 24) & 0xFF;
+  config.green = (word3 >> 16) & 0xFF;
+  config.blue = (word3 >> 8) & 0xFF;
+  config.white = word3 & 0xFF;
+}
+
+// ============================================================================
+// PROTOCOL TRANSMISSION
+// ============================================================================
+
+uint32_t buildReturnWord(uint8_t mode, uint8_t targetId, uint8_t status) {
+  uint32_t word = 0;
+  word |= (uint32_t)PROTOCOL_RETURN << 28;
+  word |= (uint32_t)mode << 24;
+  word |= (uint32_t)targetId << 20;
+  word |= (uint32_t)status << 18;
+  return word;
+}
+
+void sendReturnProtocol(uint8_t mode, uint8_t targetId, uint8_t status) {
+  uint32_t word = buildReturnWord(mode, targetId, status);
+  Serial.write((uint8_t*)&word, sizeof(word));
+}
+
+// ============================================================================
+// SERIAL COMMUNICATION
+// ============================================================================
+
+bool readSerialWord(uint32_t &word) {
+  if (Serial.available() >= 4) {
+    uint8_t bytes[4];
+    Serial.readBytes(bytes, 4);
+    
+    // Reconstruct 32-bit word (big-endian)
+    word = ((uint32_t)bytes[0] << 24) |
+           ((uint32_t)bytes[1] << 16) |
+           ((uint32_t)bytes[2] << 8) |
+           ((uint32_t)bytes[3]);
+    return true;
+  }
+  return false;
+}
+
+void processSerialData() {
+  uint32_t word;
+  
+  // Process all available protocol words
+  // NOTE: All protocols can be updated on the fly - new configurations
+  // override previous settings immediately, even during active gameplay
+  
+  if (readSerialWord(word)) {
+    uint8_t protocolId = (word >> 28) & 0x0F;
+    
+    switch (protocolId) {
+      case PROTOCOL_GENERAL:
+        parseGeneralProtocol(word, generalConfig);
+        handleGeneralProtocol();  // Immediately update state
+        break;
+        
+      case PROTOCOL_TARGET:
+        {
+          TargetProtocol config;
+          parseTargetProtocol(word, config);
+          
+          if (config.targetId < NUM_TARGETS) {
+            targetConfigs[config.targetId] = config;
+            handleTargetProtocol(config.targetId);  // Immediately apply
+          } else if (config.targetId == TARGET_ID_ALL) {
+            // Apply to all targets immediately
+            for (int i = 0; i < NUM_TARGETS; i++) {
+              TargetProtocol targetConfig = config;
+              targetConfig.targetId = i;
+              targetConfigs[i] = targetConfig;
+              handleTargetProtocol(i);
+            }
+          }
+        }
+        break;
+        
+      case PROTOCOL_LIGHTING:
+        {
+          // Lighting protocol uses 3 words (96 bits total)
+          // Read the next 2 words to complete the lighting protocol
+          uint32_t word2, word3;
+          if (readSerialWord(word2) && readSerialWord(word3)) {
+            LightingProtocol config;
+            parseLightingProtocol(word, word2, word3, config);
+            handleLightingProtocol(config);  // Immediately apply
+          } else {
+            // Incomplete lighting protocol received
+            sendReturnProtocol(RETURN_MODE_ERROR, TARGET_ID_CONTROLLER, STATUS_IDLE);
+          }
+        }
+        break;
+        
+      default:
+        // Unknown protocol
+        sendReturnProtocol(RETURN_MODE_ERROR, TARGET_ID_CONTROLLER, STATUS_IDLE);
+        break;
+    }
   }
 }
 
-void morse_0() {
-  for(int i = 0; i < 3; i++) {
-    digitalWrite(LED_BUILTIN, HIGH);
-    delay(250);
-    digitalWrite(LED_BUILTIN, LOW);
-    delay(250);
+// ============================================================================
+// PROTOCOL HANDLERS
+// ============================================================================
+
+void handleGeneralProtocol() {
+  ControllerState previousState = currentState;
+  
+  switch (generalConfig.mode) {
+    case GENERAL_MODE_IDLE:
+      currentState = STATE_IDLE;
+      // Stop all active targets when entering idle
+      if (previousState != STATE_IDLE) {
+        for (int i = 0; i < NUM_TARGETS; i++) {
+          targetStates[i].active = false;
+        }
+      }
+      sendReturnProtocol(RETURN_MODE_IDLE, TARGET_ID_CONTROLLER, STATUS_IDLE);
+      break;
+      
+    case GENERAL_MODE_TARGET_RESET:
+      currentState = STATE_TARGET_RESET;
+      // TODO: Reset all servos to 0°
+      for (int i = 0; i < NUM_TARGETS; i++) {
+        targetStates[i].active = false;
+        targetStates[i].currentVisibility = 0;
+      }
+      sendReturnProtocol(RETURN_MODE_ACK_TARGET_RESET, TARGET_ID_CONTROLLER, STATUS_IDLE);
+      break;
+      
+    case GENERAL_MODE_RUN_GAME:
+      // Allow runtime updates
+      if (previousState != STATE_RUNNING_GAME) {
+        // First time entering game mode - start timer
+        gameStartTime = millis();
+      } else if (generalConfig.gameRunTime != (gameRunTime / 10000UL)) {
+        // Game time was updated on the fly - adjust
+        unsigned long elapsed = millis() - gameStartTime;
+        gameStartTime = millis() - elapsed;  // Preserve elapsed time
+      }
+      currentState = STATE_RUNNING_GAME;
+      gameRunTime = generalConfig.gameRunTime * 10000UL;  // Convert to milliseconds
+      sendReturnProtocol(RETURN_MODE_ACK_RUN_GAME, TARGET_ID_CONTROLLER, STATUS_IDLE);
+      break;
+      
+    case GENERAL_MODE_RUN_DEBUG:
+      currentState = STATE_RUNNING_DEBUG;
+      sendReturnProtocol(RETURN_MODE_ACK_RUN_DEBUG, TARGET_ID_CONTROLLER, STATUS_IDLE);
+      break;
   }
 }
+
+void handleTargetProtocol(uint8_t targetId) {
+  TargetProtocol &config = targetConfigs[targetId];
+  TargetState &state = targetStates[targetId];
+  
+  switch (config.mode) {
+    case TARGET_MODE_HALT:
+      state.active = false;
+      // TODO: Stop servo movement
+      break;
+      
+    case TARGET_MODE_START_MOVING:
+      // Update configuration even if already active
+      state.movementSpeed = config.movementSpeed;
+      
+      // If transitioning from inactive to active, reset timer
+      if (!state.active) {
+        state.lastMoveTime = millis();
+      }
+      
+      state.active = true;
+      // TODO: Apply updated movement configuration
+      break;
+      
+    case TARGET_MODE_ONE_TIME_MOVE:
+      // Immediately move to specified visibility position
+      state.currentVisibility = config.visibility;
+      state.active = false;  // One-time move doesn't continue
+      // TODO: Move servo to target position (config.visibility * 10% hidden)
+      break;
+  }
+}
+
+void handleLightingProtocol(LightingProtocol &config) {
+  // Lighting can be updated on the fly at any time
+  
+  if (config.targetId < NUM_TARGETS) {
+    // Individual target LED control
+    LightingState &state = targetLightingStates[config.targetId];
+    state.isOn = (config.mode == LIGHTING_MODE_ON);
+    state.brightness = config.brightness;
+    state.red = config.red;
+    state.green = config.green;
+    state.blue = config.blue;
+    state.white = config.white;
+    
+    // TODO: Update LED strip for this target
+    // - Calculate absolute LED positions: (targetId * LEDS_PER_TARGET) + startLedRange
+    // - Apply RGBW color to range [startLedRange, endLedRange]
+    // - Apply brightness scaling
+    // - Update SPI LED controller
+    
+  } else if (config.targetId == LIGHTING_ID_ALL_TARGETS) {
+    // All target LEDs via SPI
+    for (int i = 0; i < NUM_TARGETS; i++) {
+      LightingState &state = targetLightingStates[i];
+      state.isOn = (config.mode == LIGHTING_MODE_ON);
+      state.brightness = config.brightness;
+      state.red = config.red;
+      state.green = config.green;
+      state.blue = config.blue;
+      state.white = config.white;
+    }
+    // TODO: Update all target LED strips
+    
+  } else if (config.targetId == LIGHTING_ID_ARENA) {
+    // Arena lighting via relay
+    arenaLightingState.isOn = (config.mode == LIGHTING_MODE_ON);
+    arenaLightingState.brightness = config.brightness;
+    // TODO: Control arena relay (on/off only, RGBW not applicable)
+    
+  } else if (config.targetId == LIGHTING_ID_ALL) {
+    // ALL lighting (targets + arena)
+    for (int i = 0; i < NUM_TARGETS; i++) {
+      LightingState &state = targetLightingStates[i];
+      state.isOn = (config.mode == LIGHTING_MODE_ON);
+      state.brightness = config.brightness;
+      state.red = config.red;
+      state.green = config.green;
+      state.blue = config.blue;
+      state.white = config.white;
+    }
+    arenaLightingState.isOn = (config.mode == LIGHTING_MODE_ON);
+    arenaLightingState.brightness = config.brightness;
+    // TODO: Update all LED strips and arena relay
+  }
+}
+
+// ============================================================================
+// GAME LOGIC
+// ============================================================================
+
+void updateGameState() {
+  switch (currentState) {
+    case STATE_IDLE:
+      // Do nothing
+      break;
+      
+    case STATE_TARGET_RESET:
+      // TODO: Monitor reset completion
+      break;
+      
+    case STATE_RUNNING_GAME:
+      {
+        unsigned long elapsed = millis() - gameStartTime;
+        
+        // Check if game time expired
+        if (elapsed >= gameRunTime) {
+          currentState = STATE_IDLE;
+          sendReturnProtocol(RETURN_MODE_END_OF_GAME, TARGET_ID_CONTROLLER, STATUS_IDLE);
+        }
+        
+        // TODO: Update active targets
+        for (int i = 0; i < NUM_TARGETS; i++) {
+          if (targetStates[i].active) {
+            updateTarget(i);
+          }
+        }
+      }
+      break;
+      
+    case STATE_RUNNING_DEBUG:
+      // TODO: Debug mode logic
+      break;
+  }
+}
+
+void updateTarget(uint8_t targetId) {
+  // NOTE: Always use latest targetConfigs - config can be updated on the fly
+  TargetProtocol &config = targetConfigs[targetId];
+  TargetState &state = targetStates[targetId];
+  
+  unsigned long currentTime = millis();
+  unsigned long timeSinceLastMove = currentTime - state.lastMoveTime;
+  
+  // Check if it's time for next move cycle
+  if (timeSinceLastMove >= (config.timeBetweenCycles * 1000UL)) {
+    state.lastMoveTime = currentTime;
+    
+    // TODO: Implement target movement logic
+    // - Determine if this cycle is a juke (based on config.jukePercent)
+    // - Check if random speed change applies (based on config.randomSpeedPercent)
+    // - Calculate movement speed (config.movementSpeed or random 0-3)
+    // - Update servo position based on visibility target
+    // - Apply transition animation
+  }
+}
+
+void checkTargetHits() {
+  // TODO: Monitor hit sensors
+  // When target is hit:
+  // sendReturnProtocol(RETURN_MODE_TARGET_HIT, targetId, STATUS_HIT);
+}
+
+// ============================================================================
+// ARDUINO SETUP & LOOP
+// ============================================================================
 
 void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
+  // Initialize serial communication
+  Serial.begin(115200);
+  
+  // Initialize target states
+  for (int i = 0; i < NUM_TARGETS; i++) {
+    targetStates[i].active = false;
+    targetStates[i].currentVisibility = 0;
+    targetStates[i].movementSpeed = 0;
+    targetStates[i].lastMoveTime = 0;
+    
+    // Initialize lighting states
+    targetLightingStates[i].isOn = false;
+    targetLightingStates[i].brightness = 0;
+    targetLightingStates[i].red = 0;
+    targetLightingStates[i].green = 0;
+    targetLightingStates[i].blue = 0;
+    targetLightingStates[i].white = 0;
+  }
+  
+  // Initialize arena lighting
+  arenaLightingState.isOn = false;
+  arenaLightingState.brightness = 0;
+  arenaLightingState.red = 0;
+  arenaLightingState.green = 0;
+  arenaLightingState.blue = 0;
+  arenaLightingState.white = 0;
+  
+  // TODO: Initialize servos, sensors, and other hardware
+  
+  // Set initial state
+  currentState = STATE_IDLE;
+  
+  // Send startup signal
+  sendReturnProtocol(RETURN_MODE_IDLE, TARGET_ID_CONTROLLER, STATUS_IDLE);
 }
 
 void loop() {
-  morse_s();
-  morse_0();
-  morse_s();
+  // Process all incoming serial data (may be multiple protocol words)
+  // This allows rapid updates from server to be applied immediately
+  while (Serial.available() >= 4) {
+    processSerialData();
+  }
+  
+  // Update game state
+  updateGameState();
+  
+  // Check for target hits
+  checkTargetHits();
+  
+  // Small delay to prevent overwhelming the loop
+  delay(10);
 }
