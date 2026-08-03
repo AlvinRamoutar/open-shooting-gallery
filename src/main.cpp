@@ -206,9 +206,9 @@ bool ledPinDirty[NUM_LED_PINS] = {false};          // Dirty flags for 4 pins (4 
 
 // TEMPORARY: Test with limited LED count due to RAM constraints
 // Full system: 1881 LEDs × 4 bytes = 7.5KB per strip = 30KB total (Arduino has 2KB!)
-// Testing with 200 LEDs per pin (one-third of a full target)
+// Testing with 3 LEDs to isolate synchronization issue
 // NOTE: For 7524 LEDs, you'll need Arduino Mega (8KB RAM) or external LED controller
-#define TEST_LEDS_PER_PIN 200  // ~800 bytes RAM per pin, 3.2KB total for 4 pins
+#define TEST_LEDS_PER_PIN 3  // Just 3 LEDs to test if sync issue persists
 
 // NeoPixel Strip Objects (4 strips, one per data pin)
 // Protocol: NEO_WRGB + NEO_KHZ800 (verified with WS2814 LEDs)
@@ -964,13 +964,17 @@ void setup() {
   // Simple direct test first - bypass pattern system
   Serial.println(F("\n[DIRECT TEST] First 3 LEDs: red, green, white"));
   // Color() takes (R, G, B, W) - library handles WRGB byte reordering
+  Serial.print(F("Strip has ")); Serial.print(ledStrips[0].numPixels()); Serial.println(F(" pixels"));
   ledStrips[0].clear();
+  Serial.println(F("Setting pixels 0,1,2..."));
   ledStrips[0].setPixelColor(0, ledStrips[0].Color(255, 0, 0, 0));  // Red
   ledStrips[0].setPixelColor(1, ledStrips[0].Color(0, 255, 0, 0));  // Green
   ledStrips[0].setPixelColor(2, ledStrips[0].Color(0, 0, 0, 255));  // White
+  Serial.println(F("Calling show()..."));
   ledStrips[0].show();
   Serial.println(F("Showing for 3 seconds..."));
   delay(3000);
+  Serial.println(F("Clearing..."));
   ledStrips[0].clear();
   ledStrips[0].show();
   
