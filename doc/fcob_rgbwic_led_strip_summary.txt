@@ -1,0 +1,17 @@
+LEDs Type: FCOB WS2814 IC RGBW Flip Chip On Board
+View Angle: 180°
+Input Voltage: DC12V/DC24V
+FPCB Width: 10mm(768LEDs/m,784LEDs/m) ， 12mm(896LEDs/m)
+Color Rendering Index: RA＞90
+Operation Temperature: -20℃~+45℃
+Storage Temperature: -20℃~+40℃
+Total Length: 3.2ft/1m, 9.8ft/3m, 16.4ft/5m, 24.6ft/7.5m, 32.8ft/10m
+IC Type: WS2814 IC
+IC Chip quantity: RGBW: 14IC/m(784LEDs/m), 16IC/m(896LEDs/m), 16IC/m(768LEDs/m)
+3PIN Connecting:
++V: +12V/+24V~~Red Wire
+DAT: Data~~Green Wire
+GND: -V~~White Wire
+DI: Data Input
+DO: Data Output
+Color Order/Channel Order: WRGB

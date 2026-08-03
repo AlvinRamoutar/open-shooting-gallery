@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
 
 // ============================================================================
 // SHOOTING GALLERY CONTROLLER
@@ -64,6 +65,9 @@
 #define LIGHTING_MODE_OFF 0x0
 #define LIGHTING_MODE_ON  0x1
 
+// Debug Configuration
+#define DEBUG_PROTOCOL_OUTPUT true  // Set to false to disable protocol debug output
+
 // Lighting Protocol - Target IDs
 #define LIGHTING_ID_ALL_TARGETS 12  // All target LEDs via SPI
 #define LIGHTING_ID_ARENA       13  // Arena lighting via relay
@@ -73,60 +77,107 @@
 #define NUM_TARGETS 12
 #define TARGET_ID_ALL 13
 #define TARGET_ID_CONTROLLER 15
-#define LEDS_PER_TARGET 512
-#define TOTAL_LEDS 8960  // 512 LEDs × 12 targets
+
+// LED System Constants (WS2814 WRGB, 24V, 5V logic)
+#define LEDS_PER_TARGET 627       // 70cm @ 896 LEDs/m = 627 LEDs
+#define TOTAL_LEDS 7524           // 627 LEDs × 12 targets
+#define TARGETS_PER_PIN 3         // 4-pin architecture: 3 targets per data pin
+#define NUM_LED_PINS 4            // D2, D3, D4, D5
+#define LEDS_PER_PIN 1881         // 627 × 3 = 1,881 LEDs per pin
+
+// LED Pin Assignments (4-pin hybrid architecture)
+#define LED_PIN_0 2               // Targets 0, 1, 2
+#define LED_PIN_1 3               // Targets 3, 4, 5
+#define LED_PIN_2 4               // Targets 6, 7, 8
+#define LED_PIN_3 5               // Targets 9, 10, 11
 
 // ============================================================================
 // DATA STRUCTURES
 // ============================================================================
 
 struct GeneralProtocol {
-  uint8_t protocolId;
-  uint8_t mode;
-  uint8_t targetId;
-  uint8_t gameRunTime;  // in 10s increments
-};
+  uint8_t protocolId : 4;   // 0-15 (4 bits)
+  uint8_t mode : 4;         // 0-15 (4 bits)
+  uint8_t targetId : 4;     // 0-15 (4 bits)
+  uint8_t reserved : 4;     // Padding (4 bits)
+  uint8_t gameRunTime;      // 0-255 in 10s increments (8 bits)
+} __attribute__((packed));
 
 struct TargetProtocol {
-  uint8_t protocolId;
-  uint8_t mode;
-  uint8_t targetId;
-  uint8_t movementSpeed;         // 0-3
-  uint8_t timeBetweenCycles;     // seconds
-  uint8_t jukePercent;           // in 10% increments
-  uint8_t randomSpeedPercent;    // in 10% increments
-  uint8_t visibility;            // % hidden in 10% increments
-};
+  uint8_t protocolId : 4;          // 0-15 (4 bits)
+  uint8_t mode : 2;                // 0-2 (2 bits)
+  uint8_t targetId : 4;            // 0-13 (4 bits)
+  uint8_t movementSpeed : 2;       // 0-3 (2 bits)
+  uint8_t timeBetweenCycles : 4;   // 0-15 seconds (4 bits)
+  uint8_t jukePercent : 4;         // 0-10 in 10% increments (4 bits)
+  uint8_t randomSpeedPercent : 4;  // 0-10 in 10% increments (4 bits)
+  uint8_t visibility : 4;          // 0-10 % hidden in 10% increments (4 bits)
+} __attribute__((packed));
 
 struct TargetState {
-  bool active;
-  uint8_t currentVisibility;
-  uint8_t movementSpeed;
-  unsigned long lastMoveTime;
-  // Add more state tracking as needed
-};
+  uint8_t active : 1;              // Boolean (1 bit)
+  uint8_t currentVisibility : 4;   // 0-10 (4 bits)
+  uint8_t movementSpeed : 2;       // 0-3 (2 bits)
+  uint8_t reserved : 1;            // Padding (1 bit)
+  uint32_t lastMoveTime;           // Milliseconds (32 bits)
+} __attribute__((packed));
 
 struct LightingProtocol {
-  uint8_t protocolId;
-  uint8_t mode;              // 0 = off, 1 = on
-  uint8_t targetId;          // 0-11 = specific target, 12 = all targets, 13 = arena, 15 = all lighting
-  uint8_t brightness;        // 0-100 (decimal percentage)
-  uint16_t startLedRange;    // 0-511 within target segment
-  uint16_t endLedRange;      // 0-511 within target segment
-  uint8_t red;               // 0-255
-  uint8_t green;             // 0-255
-  uint8_t blue;              // 0-255
-  uint8_t white;             // 0-255
-};
+  uint16_t protocolId : 4;       // 0-15 (4 bits)
+  uint16_t mode : 1;             // 0-1 (1 bit)
+  uint16_t targetId : 4;         // 0-15 (4 bits)
+  uint16_t brightness : 7;       // 0-100 (7 bits)
+  uint16_t startLedRange : 9;    // 0-511 (9 bits)
+  uint16_t endLedRange : 9;      // 0-511 (9 bits)
+  uint8_t reserved : 2;          // Padding (2 bits)
+  uint8_t red;                   // 0-255 (8 bits)
+  uint8_t green;                 // 0-255 (8 bits)
+  uint8_t blue;                  // 0-255 (8 bits)
+  uint8_t white;                 // 0-255 (8 bits)
+} __attribute__((packed));
 
 struct LightingState {
-  bool isOn;
-  uint8_t brightness;
-  uint8_t red;
-  uint8_t green;
-  uint8_t blue;
-  uint8_t white;
+  uint8_t isOn : 1;        // Boolean (1 bit)
+  uint8_t brightness : 7;  // 0-100 (7 bits)
+  uint8_t red;             // 0-255 (8 bits)
+  uint8_t green;           // 0-255 (8 bits)
+  uint8_t blue;            // 0-255 (8 bits)
+  uint8_t white;           // 0-255 (8 bits)
+} __attribute__((packed));
+
+// ============================================================================
+// LED PATTERN SYSTEM
+// ============================================================================
+// Memory-efficient pattern descriptor architecture for WS2814 WRGB LEDs.
+// Stores pattern definitions (8 bytes) instead of pixel data (30KB impossible).
+// Generates colors algorithmically during transmission.
+// ============================================================================
+
+// Pattern Types
+enum PatternType : uint8_t {
+  PATTERN_OFF = 0,        // All LEDs off
+  PATTERN_SOLID = 1,      // Single solid color
+  PATTERN_PULSE = 2,      // Breathing effect (sine wave brightness)
+  PATTERN_CHASE = 3,      // Moving dot with trail
+  PATTERN_STROBE = 4,     // Fast blink
+  PATTERN_GRADIENT = 5    // Two-color linear gradient
 };
+
+// Pattern State (maps to target behavior)
+enum PatternState : uint8_t {
+  PATTERN_STATE_IDLE = 0,    // Target idle (not moving)
+  PATTERN_STATE_MOVING = 1,  // Target active/moving
+  PATTERN_STATE_HIT = 2      // Target was hit
+};
+
+// Pattern Descriptor (8 bytes) - defines how pattern should look
+struct PatternDescriptor {
+  uint8_t type;           // PatternType (1 byte)
+  uint8_t speed;          // Animation speed 0-255 (1 byte)
+  uint8_t param1;         // Pattern-specific parameter (1 byte)
+  uint8_t brightness;     // Global brightness 0-255 (1 byte)
+  uint8_t w, r, g, b;     // WRGB color (4 bytes)
+} __attribute__((packed));  // Total: 8 bytes
 
 // ============================================================================
 // GLOBAL STATE
@@ -147,6 +198,19 @@ LightingState targetLightingStates[NUM_TARGETS];  // Per-target LED states
 LightingState arenaLightingState;                  // Arena relay lighting state
 unsigned long gameStartTime = 0;
 unsigned long gameRunTime = 0;  // in milliseconds
+
+// LED Pattern System State
+PatternDescriptor targetPatterns[NUM_TARGETS][3];  // 12 targets × 3 states = 36 patterns (288 bytes)
+PatternState currentPatternState[NUM_TARGETS];     // Current active pattern per target (12 bytes)
+bool ledPinDirty[NUM_LED_PINS] = {false};          // Dirty flags for 4 pins (4 bytes)
+
+// NeoPixel Strip Objects (4 strips, one per data pin)
+Adafruit_NeoPixel ledStrips[NUM_LED_PINS] = {
+  Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_0, NEO_WRGB + NEO_KHZ800),
+  Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_1, NEO_WRGB + NEO_KHZ800),
+  Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_2, NEO_WRGB + NEO_KHZ800),
+  Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_3, NEO_WRGB + NEO_KHZ800)
+};
 
 // ============================================================================
 // PROTOCOL PARSING
@@ -189,6 +253,79 @@ void parseLightingProtocol(uint32_t word1, uint32_t word2, uint32_t word3, Light
 }
 
 // ============================================================================
+// FORWARD DECLARATIONS
+// ============================================================================
+
+void handleGeneralProtocol();
+void handleTargetProtocol(uint8_t targetId);
+void handleLightingProtocol(LightingProtocol &config);
+void updateTarget(uint8_t targetId);
+void checkTargetHits();
+void updateGameState();
+
+// ============================================================================
+// DEBUG OUTPUT (JSON FORMAT)
+// ============================================================================
+// These functions output received (RX) and transmitted (TX) protocols as JSON
+// strings to Serial for debugging and monitoring. Each function:
+// - Checks DEBUG_PROTOCOL_OUTPUT flag (zero overhead when disabled)
+// - Builds entire JSON string in buffer first (prevents interleaved output)
+// - Outputs atomically with single Serial.println()
+// - Expands percentages to actual values (e.g., 3 -> 30%)
+//
+// Example output:
+// {"direction":"RX","protocol":"TARGET","protocolId":1,"mode":1,"targetId":0,...}
+// ============================================================================
+
+#if DEBUG_PROTOCOL_OUTPUT
+
+void debugOutputGeneralProtocol(const char* direction, GeneralProtocol &config) {
+  char buffer[128];
+  snprintf_P(buffer, sizeof(buffer),
+    PSTR("{\"direction\":\"%s\",\"protocol\":\"GENERAL\",\"protocolId\":%X,\"mode\":%X,\"targetId\":%X,\"gameRunTime\":%u}"),
+    direction, config.protocolId, config.mode, config.targetId, config.gameRunTime);
+  Serial.println(buffer);
+}
+
+void debugOutputTargetProtocol(const char* direction, TargetProtocol &config) {
+  char buffer[160];
+  snprintf_P(buffer, sizeof(buffer),
+    PSTR("{\"direction\":\"%s\",\"protocol\":\"TARGET\",\"protocolId\":%X,\"mode\":%X,\"targetId\":%u,\"movementSpeed\":%u,\"timeBetweenCycles\":%u,\"jukePercent\":%u,\"randomSpeedPercent\":%u,\"visibility\":%u}"),
+    direction, config.protocolId, config.mode, config.targetId, 
+    config.movementSpeed, config.timeBetweenCycles, 
+    config.jukePercent * 10, config.randomSpeedPercent * 10, config.visibility * 10);
+  Serial.println(buffer);
+}
+
+void debugOutputLightingProtocol(const char* direction, LightingProtocol &config) {
+  char buffer[140];
+  snprintf_P(buffer, sizeof(buffer),
+    PSTR("{\"direction\":\"%s\",\"protocol\":\"LIGHTING\",\"protocolId\":%X,\"mode\":%X,\"targetId\":%u,\"brightness\":%u,\"ledRange\":[%u,%u],\"rgbw\":[%u,%u,%u,%u]}"),
+    direction, config.protocolId, config.mode, config.targetId, config.brightness,
+    config.startLedRange, config.endLedRange,
+    config.red, config.green, config.blue, config.white);
+  Serial.println(buffer);
+}
+
+void debugOutputReturnProtocol(const char* direction, uint8_t mode, uint8_t targetId, uint8_t status) {
+  char buffer[96];
+  snprintf_P(buffer, sizeof(buffer),
+    PSTR("{\"direction\":\"%s\",\"protocol\":\"RETURN\",\"protocolId\":%X,\"mode\":%X,\"targetId\":%u,\"status\":%X}"),
+    direction, PROTOCOL_RETURN, mode, targetId, status);
+  Serial.println(buffer);
+}
+
+#else
+
+// When debug is disabled, macros compile to nothing (zero overhead)
+#define debugOutputGeneralProtocol(direction, config) ((void)0)
+#define debugOutputTargetProtocol(direction, config) ((void)0)
+#define debugOutputLightingProtocol(direction, config) ((void)0)
+#define debugOutputReturnProtocol(direction, mode, targetId, status) ((void)0)
+
+#endif
+
+// ============================================================================
 // PROTOCOL TRANSMISSION
 // ============================================================================
 
@@ -203,6 +340,10 @@ uint32_t buildReturnWord(uint8_t mode, uint8_t targetId, uint8_t status) {
 
 void sendReturnProtocol(uint8_t mode, uint8_t targetId, uint8_t status) {
   uint32_t word = buildReturnWord(mode, targetId, status);
+  
+  // Debug output before sending
+  debugOutputReturnProtocol("TX", mode, targetId, status);
+  
   Serial.write((uint8_t*)&word, sizeof(word));
 }
 
@@ -238,6 +379,7 @@ void processSerialData() {
     switch (protocolId) {
       case PROTOCOL_GENERAL:
         parseGeneralProtocol(word, generalConfig);
+        debugOutputGeneralProtocol("RX", generalConfig);  // Debug output
         handleGeneralProtocol();  // Immediately update state
         break;
         
@@ -245,6 +387,7 @@ void processSerialData() {
         {
           TargetProtocol config;
           parseTargetProtocol(word, config);
+          debugOutputTargetProtocol("RX", config);  // Debug output
           
           if (config.targetId < NUM_TARGETS) {
             targetConfigs[config.targetId] = config;
@@ -269,6 +412,7 @@ void processSerialData() {
           if (readSerialWord(word2) && readSerialWord(word3)) {
             LightingProtocol config;
             parseLightingProtocol(word, word2, word3, config);
+            debugOutputLightingProtocol("RX", config);  // Debug output
             handleLightingProtocol(config);  // Immediately apply
           } else {
             // Incomplete lighting protocol received
@@ -490,6 +634,256 @@ void checkTargetHits() {
 }
 
 // ============================================================================
+// LED PATTERN GENERATION
+// ============================================================================
+// These functions generate WRGB pixel colors on-the-fly during LED updates.
+// No RAM buffering - colors calculated mathematically from pattern descriptors.
+// ============================================================================
+
+// Fast 8-bit sine approximation (lookup table in PROGMEM)
+static const uint8_t PROGMEM sin8_table[256] = {
+  128,131,134,137,140,143,146,149,152,155,158,162,165,167,170,173,
+  176,179,182,185,188,190,193,196,198,201,203,206,208,211,213,215,
+  218,220,222,224,226,228,230,232,234,235,237,238,240,241,243,244,
+  245,246,248,249,250,250,251,252,253,253,254,254,254,255,255,255,
+  255,255,255,255,254,254,254,253,253,252,251,250,250,249,248,246,
+  245,244,243,241,240,238,237,235,234,232,230,228,226,224,222,220,
+  218,215,213,211,208,206,203,201,198,196,193,190,188,185,182,179,
+  176,173,170,167,165,162,158,155,152,149,146,143,140,137,134,131,
+  128,124,121,118,115,112,109,106,103,100,97,93,90,88,85,82,
+  79,76,73,70,67,65,62,59,57,54,52,49,47,44,42,40,
+  37,35,33,31,29,27,25,23,21,20,18,17,15,14,12,11,
+  10,9,7,6,5,5,4,3,2,2,1,1,1,0,0,0,
+  0,0,0,0,1,1,1,2,2,3,4,5,5,6,7,9,
+  10,11,12,14,15,17,18,20,21,23,25,27,29,31,33,35,
+  37,40,42,44,47,49,52,54,57,59,62,65,67,70,73,76,
+  79,82,85,88,90,93,97,100,103,106,109,112,115,118,121,124
+};
+
+inline uint8_t sin8(uint8_t theta) {
+  return pgm_read_byte(&sin8_table[theta]);
+}
+
+// Scale 8-bit value by 8-bit scale factor (returns 8-bit result)
+inline uint8_t scale8(uint8_t value, uint8_t scale) {
+  return ((uint16_t)value * (uint16_t)scale) >> 8;
+}
+
+// Generate single pixel color from pattern descriptor
+void generatePixelColor(const PatternDescriptor &pattern, uint16_t ledIndex, 
+                        uint32_t timestamp, uint8_t &w, uint8_t &r, uint8_t &g, uint8_t &b) {
+  switch (pattern.type) {
+    case PATTERN_OFF:
+      w = r = g = b = 0;
+      break;
+      
+    case PATTERN_SOLID:
+      // Simple solid color - same for all LEDs
+      w = scale8(pattern.w, pattern.brightness);
+      r = scale8(pattern.r, pattern.brightness);
+      g = scale8(pattern.g, pattern.brightness);
+      b = scale8(pattern.b, pattern.brightness);
+      break;
+      
+    case PATTERN_PULSE:
+      // Breathing effect - sine wave modulates brightness
+      {
+        uint8_t phase = ((timestamp * pattern.speed) >> 4) & 0xFF;
+        uint8_t pulseBrightness = sin8(phase);
+        uint8_t scaledBrightness = scale8(pattern.brightness, pulseBrightness);
+        w = scale8(pattern.w, scaledBrightness);
+        r = scale8(pattern.r, scaledBrightness);
+        g = scale8(pattern.g, scaledBrightness);
+        b = scale8(pattern.b, scaledBrightness);
+      }
+      break;
+      
+    case PATTERN_CHASE:
+      // Moving dot with trailing fade
+      {
+        uint16_t position = ((timestamp * pattern.speed) >> 6) % LEDS_PER_TARGET;
+        int16_t tailLength = pattern.param1;  // Tail length (0-255)
+        
+        int16_t distance = (int16_t)ledIndex - (int16_t)position;
+        if (distance < 0) distance += LEDS_PER_TARGET;  // Handle wraparound
+        
+        if (distance < tailLength) {
+          // In tail - fade from 100% to 0%
+          uint8_t fade = 255 - ((distance * 255) / tailLength);
+          uint8_t scaledBrightness = scale8(pattern.brightness, fade);
+          w = scale8(pattern.w, scaledBrightness);
+          r = scale8(pattern.r, scaledBrightness);
+          g = scale8(pattern.g, scaledBrightness);
+          b = scale8(pattern.b, scaledBrightness);
+        } else {
+          w = r = g = b = 0;  // Outside chase
+        }
+      }
+      break;
+      
+    case PATTERN_STROBE:
+      // Fast on/off blinking
+      {
+        uint8_t strobeRate = pattern.param1 ? pattern.param1 : 5;  // Blinks per second (default 5)
+        bool isOn = (((timestamp * strobeRate) / 100) & 1) == 0;
+        
+        if (isOn) {
+          w = scale8(pattern.w, pattern.brightness);
+          r = scale8(pattern.r, pattern.brightness);
+          g = scale8(pattern.g, pattern.brightness);
+          b = scale8(pattern.b, pattern.brightness);
+        } else {
+          w = r = g = b = 0;
+        }
+      }
+      break;
+      
+    case PATTERN_GRADIENT:
+      // Linear two-color gradient across LED strip
+      // param1 stores second color in upper bits (simplified - use base color + param for variation)
+      {
+        uint8_t ratio = (ledIndex * 255UL) / (LEDS_PER_TARGET - 1);
+        // Gradient from base color to dimmed version
+        uint8_t fade = 255 - ratio;
+        w = scale8(scale8(pattern.w, fade), pattern.brightness);
+        r = scale8(scale8(pattern.r, fade), pattern.brightness);
+        g = scale8(scale8(pattern.g, fade), pattern.brightness);
+        b = scale8(scale8(pattern.b, fade), pattern.brightness);
+      }
+      break;
+      
+    default:
+      w = r = g = b = 0;
+  }
+}
+
+// Update single LED pin with patterns for its 3 targets
+void updateLEDPin(uint8_t pinIndex) {
+  if (pinIndex >= NUM_LED_PINS) return;
+  
+  Adafruit_NeoPixel &strip = ledStrips[pinIndex];
+  uint32_t timestamp = millis();
+  
+  // Each pin controls 3 targets (1,881 LEDs = 627 × 3)
+  uint8_t startTarget = pinIndex * TARGETS_PER_PIN;
+  
+  for (uint16_t ledIndex = 0; ledIndex < LEDS_PER_PIN; ledIndex++) {
+    // Determine which target this LED belongs to (0-2 within this pin's group)
+    uint8_t localTarget = ledIndex / LEDS_PER_TARGET;
+    uint8_t globalTarget = startTarget + localTarget;
+    uint16_t ledWithinTarget = ledIndex % LEDS_PER_TARGET;
+    
+    // Get active pattern for this target
+    PatternState state = currentPatternState[globalTarget];
+    const PatternDescriptor &pattern = targetPatterns[globalTarget][state];
+    
+    // Generate color
+    uint8_t w, r, g, b;
+    generatePixelColor(pattern, ledWithinTarget, timestamp, w, r, g, b);
+    
+    // Set pixel (NeoPixel library handles WRGB byte order)
+    strip.setPixelColor(ledIndex, strip.Color(r, g, b, w));
+  }
+  
+  strip.show();  // Send to LEDs (~75ms for 1,881 LEDs)
+  ledPinDirty[pinIndex] = false;
+}
+
+// Update all LED pins that have dirty flags set
+void updateDirtyLEDs() {
+  for (uint8_t pin = 0; pin < NUM_LED_PINS; pin++) {
+    if (ledPinDirty[pin]) {
+      updateLEDPin(pin);
+    }
+  }
+}
+
+// Mark a target's LED pin as needing update
+void markTargetLEDsDirty(uint8_t targetId) {
+  if (targetId >= NUM_TARGETS) return;
+  uint8_t pinIndex = targetId / TARGETS_PER_PIN;
+  ledPinDirty[pinIndex] = true;
+}
+
+// Update pattern states based on target activity
+void updatePatternStates() {
+  for (uint8_t targetId = 0; targetId < NUM_TARGETS; targetId++) {
+    PatternState oldState = currentPatternState[targetId];
+    PatternState newState;
+    
+    // Determine pattern based on target state
+    // TODO: Add hit detection flag to TargetState
+    // For now, use active flag to switch between IDLE and MOVING
+    if (targetStates[targetId].active) {
+      newState = PATTERN_STATE_MOVING;
+    } else {
+      newState = PATTERN_STATE_IDLE;
+    }
+    
+    // If state changed, mark LEDs dirty
+    if (oldState != newState) {
+      currentPatternState[targetId] = newState;
+      markTargetLEDsDirty(targetId);
+    }
+  }
+}
+
+// Initialize default patterns (called from setup())
+void initializeDefaultPatterns() {
+  // IDLE pattern: Dim cyan solid color
+  for (uint8_t i = 0; i < NUM_TARGETS; i++) {
+    targetPatterns[i][PATTERN_STATE_IDLE] = {
+      .type = PATTERN_SOLID,
+      .speed = 0,
+      .param1 = 0,
+      .brightness = 64,   // 25% brightness
+      .w = 0,             // No white
+      .r = 0,
+      .g = 64,
+      .b = 128            // Cyan
+    };
+  }
+  
+  // MOVING pattern: Green chase effect
+  for (uint8_t i = 0; i < NUM_TARGETS; i++) {
+    targetPatterns[i][PATTERN_STATE_MOVING] = {
+      .type = PATTERN_CHASE,
+      .speed = 8,         // Medium speed
+      .param1 = 50,       // Tail length
+      .brightness = 255,  // Full brightness
+      .w = 0,
+      .r = 0,
+      .g = 255,           // Green
+      .b = 0
+    };
+  }
+  
+  // HIT pattern: Red strobe
+  for (uint8_t i = 0; i < NUM_TARGETS; i++) {
+    targetPatterns[i][PATTERN_STATE_HIT] = {
+      .type = PATTERN_STROBE,
+      .speed = 10,        // Fast
+      .param1 = 5,        // 5 blinks per second
+      .brightness = 255,
+      .w = 0,
+      .r = 255,           // Red
+      .g = 0,
+      .b = 0
+    };
+  }
+  
+  // Initialize all targets to IDLE pattern
+  for (uint8_t i = 0; i < NUM_TARGETS; i++) {
+    currentPatternState[i] = PATTERN_STATE_IDLE;
+  }
+  
+  // Mark all pins dirty for initial update
+  for (uint8_t pin = 0; pin < NUM_LED_PINS; pin++) {
+    ledPinDirty[pin] = true;
+  }
+}
+
+// ============================================================================
 // ARDUINO SETUP & LOOP
 // ============================================================================
 
@@ -521,6 +915,16 @@ void setup() {
   arenaLightingState.blue = 0;
   arenaLightingState.white = 0;
   
+  // Initialize LED strips (WS2814 WRGB)
+  for (uint8_t pin = 0; pin < NUM_LED_PINS; pin++) {
+    ledStrips[pin].begin();
+    ledStrips[pin].setBrightness(255);  // Max brightness (individual patterns control dimming)
+    ledStrips[pin].show();  // Initialize all pixels to 'off'
+  }
+  
+  // Initialize LED patterns
+  initializeDefaultPatterns();
+  
   // TODO: Initialize servos, sensors, and other hardware
   
   // Set initial state
@@ -533,8 +937,10 @@ void setup() {
 void loop() {
   // Process all incoming serial data (may be multiple protocol words)
   // This allows rapid updates from server to be applied immediately
-  while (Serial.available() >= 4) {
-    processSerialData();
+  if (Serial.available() >= 4) {
+    do {
+      processSerialData();
+    } while (Serial.available() >= 4);
   }
   
   // Update game state
@@ -543,6 +949,43 @@ void loop() {
   // Check for target hits
   checkTargetHits();
   
-  // Small delay to prevent overwhelming the loop
-  delay(10);
+  // ============================================================================
+  // TEMPORARY: LED PATTERN TEST - Remove after hardware testing
+  // ============================================================================
+  // Cycle through pattern states every 3 seconds to test all patterns
+  static uint32_t lastPatternChange = 0;
+  static uint8_t testPatternIndex = 0;
+  
+  if (millis() - lastPatternChange > 3000) {
+    lastPatternChange = millis();
+    
+    // Cycle through pattern states: IDLE -> MOVING -> HIT -> IDLE...
+    PatternState testState = (PatternState)(testPatternIndex % 3);
+    
+    // Apply test pattern to first 3 targets (visible on Pin D2)
+    for (uint8_t i = 0; i < 3; i++) {
+      currentPatternState[i] = testState;
+      markTargetLEDsDirty(i);
+    }
+    
+    testPatternIndex++;
+    
+    // Debug output
+    #if DEBUG_PROTOCOL_OUTPUT
+    const char* stateNames[] = {"IDLE", "MOVING", "HIT"};
+    Serial.print("LED TEST: Pattern changed to ");
+    Serial.println(stateNames[testState]);
+    #endif
+  }
+  // ============================================================================
+  // END TEMPORARY TEST
+  // ============================================================================
+  
+  // Update LED pattern states based on target activity
+  updatePatternStates();
+  
+  // Update LEDs (only dirty pins are refreshed)
+  updateDirtyLEDs();
+  
+  // No delay - run at full speed for maximum responsiveness
 }
