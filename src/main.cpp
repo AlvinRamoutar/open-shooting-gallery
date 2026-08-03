@@ -676,7 +676,7 @@ inline uint8_t scale8(uint8_t value, uint8_t scale) {
 }
 
 // Generate single pixel color from pattern descriptor
-void generatePixelColor(const PatternDescriptor &pattern, uint16_t ledIndex, 
+void generatePixelColor(const PatternDescriptor &pattern, uint16_t ledIndex, uint16_t numLeds,
                         uint32_t timestamp, uint8_t &w, uint8_t &r, uint8_t &g, uint8_t &b) {
   switch (pattern.type) {
     case PATTERN_OFF:
@@ -707,11 +707,12 @@ void generatePixelColor(const PatternDescriptor &pattern, uint16_t ledIndex,
     case PATTERN_CHASE:
       // Moving dot with trailing fade
       {
-        uint16_t position = ((timestamp * pattern.speed) >> 6) % LEDS_PER_TARGET;
+        uint16_t position = ((timestamp * pattern.speed) >> 6) % numLeds;  // Use actual LED count
         int16_t tailLength = pattern.param1;  // Tail length (0-255)
+        if (tailLength > (int16_t)(numLeds / 2)) tailLength = numLeds / 2;  // Limit tail
         
         int16_t distance = (int16_t)ledIndex - (int16_t)position;
-        if (distance < 0) distance += LEDS_PER_TARGET;  // Handle wraparound
+        if (distance < 0) distance += numLeds;  // Handle wraparound
         
         if (distance < tailLength) {
           // In tail - fade from 100% to 0%
@@ -730,8 +731,9 @@ void generatePixelColor(const PatternDescriptor &pattern, uint16_t ledIndex,
     case PATTERN_STROBE:
       // Fast on/off blinking
       {
-        uint8_t strobeRate = pattern.param1 ? pattern.param1 : 5;  // Blinks per second (default 5)
-        bool isOn = (((timestamp * strobeRate) / 100) & 1) == 0;
+        uint8_t strobeRate = pattern.param1 ? pattern.param1 : 10;  // Blinks per second (default 10)
+        uint32_t period = 1000 / strobeRate;  // Period in ms
+        bool isOn = ((timestamp % period) < (period / 2));  // 50% duty cycle
         
         if (isOn) {
           w = scale8(pattern.w, pattern.brightness);
@@ -748,7 +750,7 @@ void generatePixelColor(const PatternDescriptor &pattern, uint16_t ledIndex,
       // Linear two-color gradient across LED strip
       // param1 stores second color in upper bits (simplified - use base color + param for variation)
       {
-        uint8_t ratio = (ledIndex * 255UL) / (LEDS_PER_TARGET - 1);
+        uint8_t ratio = numLeds > 1 ? (ledIndex * 255UL) / (numLeds - 1) : 0;
         // Gradient from base color to dimmed version
         uint8_t fade = 255 - ratio;
         w = scale8(scale8(pattern.w, fade), pattern.brightness);
@@ -785,7 +787,7 @@ void updateLEDPin(uint8_t pinIndex) {
     
     // Generate color
     uint8_t w, r, g, b;
-    generatePixelColor(pattern, ledWithinTarget, timestamp, w, r, g, b);
+    generatePixelColor(pattern, ledWithinTarget, numLeds, timestamp, w, r, g, b);
     
     // Set pixel - Color(R, G, B, W) - library handles WRGB byte reordering
     strip.setPixelColor(ledIndex, strip.Color(r, g, b, w));
@@ -855,7 +857,7 @@ void initializeDefaultPatterns() {
     targetPatterns[i][PATTERN_STATE_MOVING] = {
       .type = PATTERN_CHASE,
       .speed = 8,         // Medium speed
-      .param1 = 50,       // Tail length
+      .param1 = 3,        // Tail length (short for testing with 10 LEDs)
       .brightness = 255,  // Full brightness
       .w = 0,
       .r = 0,
@@ -869,7 +871,7 @@ void initializeDefaultPatterns() {
     targetPatterns[i][PATTERN_STATE_HIT] = {
       .type = PATTERN_STROBE,
       .speed = 10,        // Fast
-      .param1 = 5,        // 5 blinks per second
+      .param1 = 10,       // 10 blinks per second
       .brightness = 255,
       .w = 0,
       .r = 255,           // Red
