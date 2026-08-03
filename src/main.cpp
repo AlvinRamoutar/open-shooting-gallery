@@ -929,22 +929,31 @@ void setup() {
   initializeDefaultPatterns();
   
   // ============================================================================
-  // TEMPORARY: PROTOCOL DETECTION TEST - Try different configurations
+  // TEMPORARY: PIN & LED TESTS
   // ============================================================================
-  Serial.println("=== LED PROTOCOL DETECTION TEST ===");
-  Serial.println("Testing 3 LEDs on Pin D2 with multiple protocols...");
-  Serial.println("Watch for ANY light (even wrong colors means progress!)");
-  Serial.println("");
-  
-  // Verify pin is set to OUTPUT mode
+  Serial.println(F("=== PIN TEST ==="));
   pinMode(LED_PIN_0, OUTPUT);
+  
+  digitalWrite(LED_PIN_0, HIGH);
+  Serial.println(F("[1] D2=HIGH: expect ~5V"));
+  delay(4000);
+  
   digitalWrite(LED_PIN_0, LOW);
-  delay(100);
+  Serial.println(F("[2] D2=LOW: expect ~0V"));
+  delay(4000);
   
-  Serial.println("Pin D2 initialized. Testing protocols:");
+  Serial.println(F("[3] D2=toggle: expect ~2.5V"));
+  for (int i = 0; i < 50000; i++) {
+    digitalWrite(LED_PIN_0, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(LED_PIN_0, LOW);
+    delayMicroseconds(10);
+  }
   
-  // Test 1: NEO_GRB + 800kHz (WS2812B - MOST COMMON)
-  Serial.println("\n[TEST 1] NEO_GRB + 800kHz (WS2812B/WS2813)");
+  Serial.println(F("Testing LEDs..."));
+  
+  // Test 1: NEO_GRB + 800kHz
+  Serial.println(F("[LED1] GRB 800kHz"));
   {
     Adafruit_NeoPixel test(3, LED_PIN_0, NEO_GRB + NEO_KHZ800);
     test.begin();
@@ -959,7 +968,7 @@ void setup() {
   }
   
   // Test 2: NEO_GRBW + 800kHz (SK6812 RGBW)
-  Serial.println("[TEST 2] NEO_GRBW + 800kHz (SK6812 RGBW)");
+  Serial.println(F("[LED2] GRBW 800kHz"));
   {
     Adafruit_NeoPixel test(3, LED_PIN_0, NEO_GRBW + NEO_KHZ800);
     test.begin();
@@ -974,7 +983,7 @@ void setup() {
   }
   
   // Test 3: NEO_WRGB + 800kHz (WS2814 - per datasheet)
-  Serial.println("[TEST 3] NEO_WRGB + 800kHz (WS2814 per spec)");
+  Serial.println(F("[LED3] WRGB 800kHz"));
   {
     Adafruit_NeoPixel test(3, LED_PIN_0, NEO_WRGB + NEO_KHZ800);
     test.begin();
@@ -989,7 +998,7 @@ void setup() {
   }
   
   // Test 4: NEO_RGB + 400kHz (WS2811 - older/slower)
-  Serial.println("[TEST 4] NEO_RGB + 400kHz (WS2811/older chips)");
+  Serial.println(F("[LED4] RGB 400kHz"));
   {
     Adafruit_NeoPixel test(3, LED_PIN_0, NEO_RGB + NEO_KHZ400);
     test.begin();
@@ -1004,7 +1013,7 @@ void setup() {
   }
   
   // Test 5: NEO_GRB + 400kHz
-  Serial.println("[TEST 5] NEO_GRB + 400kHz (WS2811 GRB variant)");
+  Serial.println(F("[LED5] GRB 400kHz"));
   {
     Adafruit_NeoPixel test(3, LED_PIN_0, NEO_GRB + NEO_KHZ400);
     test.begin();
@@ -1018,17 +1027,12 @@ void setup() {
     test.show();
   }
   
-  Serial.println("\n=== TEST COMPLETE ===");
-  Serial.println("Results:");
-  Serial.println("  - If you saw ANY lights: Note which test # worked!");
-  Serial.println("  - If colors were wrong: Still good! Just need to remap channels");
-  Serial.println("  - If NOTHING at all:");
-  Serial.println("      1. Check D2 connection to strip's DI (data input)");
-  Serial.println("      2. Verify Arduino GND connects to LED power GND");
-  Serial.println("      3. Try adding 330 ohm resistor between D2 and DI");
-  Serial.println("      4. Check if strip needs level shifter (5V->5V logic)");
-  Serial.println("      5. Measure voltage on D2 with multimeter while running");
-  Serial.println("\nEntering normal operation (no LEDs will update)...");
+  Serial.println(F("\n=== DONE ==="));
+  Serial.println(F("If pin tests OK but no LEDs:"));
+  Serial.println(F("- Add 330ohm resistor D2->DI"));
+  Serial.println(F("- Check GND connection"));
+  Serial.println(F("If pin tests 0.1V:"));
+  Serial.println(F("- Try different pin (D6/D7)"));
   // ============================================================================
   // END TEMPORARY DIAGNOSTIC
   // ============================================================================
