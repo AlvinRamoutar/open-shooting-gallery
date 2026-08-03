@@ -929,52 +929,91 @@ void setup() {
   initializeDefaultPatterns();
   
   // ============================================================================
-  // MINIMAL LED TEST - Test pin BEFORE and AFTER NeoPixel
+  // LED PROTOCOL TESTS
   // ============================================================================
-  Serial.println(F("=== MINIMAL LED TEST ==="));
+  Serial.println(F("=== LED PROTOCOL TESTS ==="));
+  Serial.println(F("Testing 3 LEDs with 5 different protocols..."));
+  delay(1000);
   
-  // Confirm pin works before NeoPixel
-  pinMode(LED_PIN_0, OUTPUT);
-  digitalWrite(LED_PIN_0, HIGH);
-  Serial.println(F("Before NeoPixel: D2=HIGH (should be 5V)"));
-  delay(2000);
-  digitalWrite(LED_PIN_0, LOW);
+  // Test 1: NEO_GRB + 800kHz (WS2812B - most common)
+  Serial.println(F("[TEST 1] NEO_GRB 800kHz"));
+  {
+    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_GRB + NEO_KHZ800);
+    test.begin();
+    test.setBrightness(255);
+    test.setPixelColor(0, test.Color(255, 0, 0));  // Red
+    test.setPixelColor(1, test.Color(0, 255, 0));  // Green
+    test.setPixelColor(2, test.Color(0, 0, 255));  // Blue
+    test.show();
+    delay(3000);
+    test.clear();
+    test.show();
+  }
   
-  // Try single NeoPixel test
-  Serial.println(F("Initializing NeoPixel..."));
-  Adafruit_NeoPixel strip(3, LED_PIN_0, NEO_WRGB + NEO_KHZ800);
-  strip.begin();
-  Serial.println(F("NeoPixel initialized"));
+  // Test 2: NEO_GRBW + 800kHz (SK6812 RGBW)
+  Serial.println(F("[TEST 2] NEO_GRBW 800kHz"));
+  {
+    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_GRBW + NEO_KHZ800);
+    test.begin();
+    test.setBrightness(255);
+    test.setPixelColor(0, test.Color(255, 0, 0, 0));     // Red
+    test.setPixelColor(1, test.Color(0, 255, 0, 0));     // Green
+    test.setPixelColor(2, test.Color(0, 0, 0, 255));     // White
+    test.show();
+    delay(3000);
+    test.clear();
+    test.show();
+  }
   
-  // Test if pin still works after NeoPixel.begin()
-  pinMode(LED_PIN_0, OUTPUT);
-  digitalWrite(LED_PIN_0, HIGH);
-  Serial.println(F("After begin(): D2=HIGH (check voltage now!)"));
-  delay(3000);
-  digitalWrite(LED_PIN_0, LOW);
+  // Test 3: NEO_WRGB + 800kHz (WS2814 per datasheet)
+  Serial.println(F("[TEST 3] NEO_WRGB 800kHz (WS2814)"));
+  {
+    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_WRGB + NEO_KHZ800);
+    test.begin();
+    test.setBrightness(255);
+    test.setPixelColor(0, test.Color(255, 0, 0, 0));     // Red
+    test.setPixelColor(1, test.Color(0, 255, 0, 0));     // Green
+    test.setPixelColor(2, test.Color(0, 0, 0, 255));     // White
+    test.show();
+    delay(3000);
+    test.clear();
+    test.show();
+  }
   
-  // Try to light LEDs
-  Serial.println(F("Attempting strip.show()..."));
-  strip.setBrightness(255);
-  strip.setPixelColor(0, strip.Color(255, 0, 0, 0));  // Red
-  strip.setPixelColor(1, strip.Color(0, 255, 0, 0));  // Green  
-  strip.setPixelColor(2, strip.Color(0, 0, 0, 255));  // White
-  strip.show();
-  Serial.println(F("strip.show() called (check D2 voltage now!)"));
-  delay(5000);
+  // Test 4: NEO_RGB + 400kHz (WS2811 older/slower)
+  Serial.println(F("[TEST 4] NEO_RGB 400kHz"));
+  {
+    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_RGB + NEO_KHZ400);
+    test.begin();
+    test.setBrightness(255);
+    test.setPixelColor(0, test.Color(255, 0, 0));     // Red
+    test.setPixelColor(1, test.Color(0, 255, 0));     // Green
+    test.setPixelColor(2, test.Color(0, 0, 255));     // Blue
+    test.show();
+    delay(3000);
+    test.clear();
+    test.show();
+  }
   
-  // Test pin again after show()
-  pinMode(LED_PIN_0, OUTPUT);
-  digitalWrite(LED_PIN_0, HIGH);
-  Serial.println(F("After show(): D2=HIGH (check voltage!)"));
-  delay(3000);
-  digitalWrite(LED_PIN_0, LOW);
+  // Test 5: NEO_GRB + 400kHz
+  Serial.println(F("[TEST 5] NEO_GRB 400kHz"));
+  {
+    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_GRB + NEO_KHZ400);
+    test.begin();
+    test.setBrightness(255);
+    test.setPixelColor(0, test.Color(255, 0, 0));     // Red
+    test.setPixelColor(1, test.Color(0, 255, 0));     // Green
+    test.setPixelColor(2, test.Color(0, 0, 255));     // Blue
+    test.show();
+    delay(3000);
+    test.clear();
+    test.show();
+  }
   
-  Serial.println(F("Test complete"));
-  Serial.println(F(""));
-  Serial.println(F("Entering main loop..."));
+  Serial.println(F("=== TESTS COMPLETE ==="));
+  Serial.println(F("If no LEDs lit: add 330ohm resistor D2->DI"));
   // ============================================================================
-  // END OF TEMPORARY TEST
+  // END OF TESTS
   // ============================================================================
   // ============================================================================
   // END TEMPORARY DIAGNOSTIC
