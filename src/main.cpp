@@ -782,8 +782,8 @@ void updateLEDPin(uint8_t pinIndex) {
     uint8_t w, r, g, b;
     generatePixelColor(pattern, ledWithinTarget, timestamp, w, r, g, b);
     
-    // Set pixel - NEO_WRGB order: Color(W, R, G, B)
-    strip.setPixelColor(ledIndex, strip.Color(w, r, g, b));
+    // Set pixel - Color(R, G, B, W) - library handles WRGB byte reordering
+    strip.setPixelColor(ledIndex, strip.Color(r, g, b, w));
   }
   
   strip.show();  // Send to LEDs (~75ms for 1,881 LEDs)
@@ -919,7 +919,7 @@ void setup() {
   // Initialize LED strips (WS2814 WRGB)
   for (uint8_t pin = 0; pin < NUM_LED_PINS; pin++) {
     ledStrips[pin].begin();
-    ledStrips[pin].setBrightness(255);  // Max brightness (individual patterns control dimming)
+    ledStrips[pin].setBrightness(128);  // 50% brightness
     ledStrips[pin].show();  // Initialize all pixels to 'off'
   }
   
@@ -937,10 +937,10 @@ void setup() {
   
   // Simple direct test first - bypass pattern system
   Serial.println(F("Direct test: First 3 LEDs red/green/white"));
-  // NEO_WRGB order: Color(W, R, G, B)
-  ledStrips[0].setPixelColor(0, ledStrips[0].Color(0, 255, 0, 0));  // Red (no white, full red)
-  ledStrips[0].setPixelColor(1, ledStrips[0].Color(0, 0, 255, 0));  // Green (no white, full green)
-  ledStrips[0].setPixelColor(2, ledStrips[0].Color(255, 0, 0, 0));  // White (full white)
+  // Color() takes (R, G, B, W) - library handles WRGB byte reordering
+  ledStrips[0].setPixelColor(0, ledStrips[0].Color(255, 0, 0, 0));  // Red
+  ledStrips[0].setPixelColor(1, ledStrips[0].Color(0, 255, 0, 0));  // Green
+  ledStrips[0].setPixelColor(2, ledStrips[0].Color(0, 0, 0, 255));  // White
   ledStrips[0].show();
   delay(3000);
   ledStrips[0].clear();
