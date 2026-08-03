@@ -733,7 +733,8 @@ void generatePixelColor(const PatternDescriptor &pattern, uint16_t ledIndex, uin
       {
         uint8_t strobeRate = pattern.param1 ? pattern.param1 : 10;  // Blinks per second (default 10)
         uint32_t period = 1000 / strobeRate;  // Period in ms
-        bool isOn = ((timestamp % period) < (period / 2));  // 50% duty cycle
+        uint32_t phaseInPeriod = timestamp % period;
+        bool isOn = (phaseInPeriod < (period / 2));  // 50% duty cycle
         
         if (isOn) {
           w = scale8(pattern.w, pattern.brightness);
@@ -871,7 +872,7 @@ void initializeDefaultPatterns() {
     targetPatterns[i][PATTERN_STATE_HIT] = {
       .type = PATTERN_STROBE,
       .speed = 10,        // Fast
-      .param1 = 10,       // 10 blinks per second
+      .param1 = 2,        // 2 blinks per second (slower for testing)
       .brightness = 255,
       .w = 0,
       .r = 255,           // Red
@@ -989,7 +990,13 @@ void setup() {
     // HIT state (red strobe)
     Serial.println(F("State: HIT (red strobe)"));
     currentPatternState[0] = PATTERN_STATE_HIT;
+    Serial.print(F("Pattern: type=")); Serial.print(targetPatterns[0][PATTERN_STATE_HIT].type);
+    Serial.print(F(" r=")); Serial.print(targetPatterns[0][PATTERN_STATE_HIT].r);
+    Serial.print(F(" rate=")); Serial.println(targetPatterns[0][PATTERN_STATE_HIT].param1);
     for (int i = 0; i < 30; i++) {  // Run strobe for 3 seconds
+      if (i == 0) {
+        Serial.print(F("Strobe frame 0, millis=")); Serial.println(millis());
+      }
       updateLEDPin(0);  // Update every frame
       delay(100);
     }
