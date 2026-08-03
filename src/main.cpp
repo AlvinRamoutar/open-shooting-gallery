@@ -782,8 +782,8 @@ void updateLEDPin(uint8_t pinIndex) {
     uint8_t w, r, g, b;
     generatePixelColor(pattern, ledWithinTarget, timestamp, w, r, g, b);
     
-    // Set pixel (NeoPixel library handles WRGB byte order)
-    strip.setPixelColor(ledIndex, strip.Color(r, g, b, w));
+    // Set pixel - NEO_WRGB order: Color(W, R, G, B)
+    strip.setPixelColor(ledIndex, strip.Color(w, r, g, b));
   }
   
   strip.show();  // Send to LEDs (~75ms for 1,881 LEDs)
@@ -936,10 +936,11 @@ void setup() {
   Serial.println(F("Cycling through target states..."));
   
   // Simple direct test first - bypass pattern system
-  Serial.println(F("Direct test: First 3 LEDs red"));
-  ledStrips[0].setPixelColor(0, ledStrips[0].Color(255, 0, 0, 0));  // Red
-  ledStrips[0].setPixelColor(1, ledStrips[0].Color(0, 255, 0, 0));  // Green
-  ledStrips[0].setPixelColor(2, ledStrips[0].Color(0, 0, 0, 255));  // White
+  Serial.println(F("Direct test: First 3 LEDs red/green/white"));
+  // NEO_WRGB order: Color(W, R, G, B)
+  ledStrips[0].setPixelColor(0, ledStrips[0].Color(0, 255, 0, 0));  // Red (no white, full red)
+  ledStrips[0].setPixelColor(1, ledStrips[0].Color(0, 0, 255, 0));  // Green (no white, full green)
+  ledStrips[0].setPixelColor(2, ledStrips[0].Color(255, 0, 0, 0));  // White (full white)
   ledStrips[0].show();
   delay(3000);
   ledStrips[0].clear();
