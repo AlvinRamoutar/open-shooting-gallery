@@ -975,25 +975,22 @@ void setup() {
     Serial.print(F("\nCycle ")); Serial.print(cycle + 1);
     Serial.println(F(": IDLE (cyan solid)"));
     currentPatternState[0] = PATTERN_STATE_IDLE;
-    markTargetLEDsDirty(0);
-    updateDirtyLEDs();
+    updateLEDPin(0);  // Direct update
     delay(3000);
     
     // MOVING state (green chase)
     Serial.println(F("State: MOVING (green chase)"));
     currentPatternState[0] = PATTERN_STATE_MOVING;
-    markTargetLEDsDirty(0);
     for (int i = 0; i < 30; i++) {  // Run chase for 3 seconds
-      updateDirtyLEDs();
+      updateLEDPin(0);  // Update every frame
       delay(100);
     }
     
     // HIT state (red strobe)
     Serial.println(F("State: HIT (red strobe)"));
     currentPatternState[0] = PATTERN_STATE_HIT;
-    markTargetLEDsDirty(0);
     for (int i = 0; i < 30; i++) {  // Run strobe for 3 seconds
-      updateDirtyLEDs();
+      updateLEDPin(0);  // Update every frame
       delay(100);
     }
   }
@@ -1001,8 +998,7 @@ void setup() {
   // Reset to IDLE
   Serial.println(F("\nResetting to IDLE"));
   currentPatternState[0] = PATTERN_STATE_IDLE;
-  markTargetLEDsDirty(0);
-  updateDirtyLEDs();
+  updateLEDPin(0);
   
   Serial.println(F("Pattern test complete"));
   // ============================================================================
