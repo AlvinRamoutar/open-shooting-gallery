@@ -204,13 +204,18 @@ PatternDescriptor targetPatterns[NUM_TARGETS][3];  // 12 targets × 3 states = 3
 PatternState currentPatternState[NUM_TARGETS];     // Current active pattern per target (12 bytes)
 bool ledPinDirty[NUM_LED_PINS] = {false};          // Dirty flags for 4 pins (4 bytes)
 
+// TEMPORARY: Test with small LED count due to RAM constraints
+// Full system: 1881 LEDs × 4 bytes = 7.5KB per strip = 30KB total (Arduino has 2KB!)
+// Need streaming approach or external controller for full 7524 LED system
+#define TEST_LEDS_PER_PIN 10  // Just 10 LEDs for testing
+
 // NeoPixel Strip Objects (4 strips, one per data pin)
 // Protocol: NEO_WRGB + NEO_KHZ800 (verified with WS2814 LEDs)
 Adafruit_NeoPixel ledStrips[NUM_LED_PINS] = {
-  Adafruit_NeoPixel(LEDS_PER_TARGET * 3, LED_PIN_0, NEO_WRGB + NEO_KHZ800),  // Targets 0,1,2
-  Adafruit_NeoPixel(LEDS_PER_TARGET * 3, LED_PIN_1, NEO_WRGB + NEO_KHZ800),  // Targets 3,4,5
-  Adafruit_NeoPixel(LEDS_PER_TARGET * 3, LED_PIN_2, NEO_WRGB + NEO_KHZ800),  // Targets 6,7,8
-  Adafruit_NeoPixel(LEDS_PER_TARGET * 3, LED_PIN_3, NEO_WRGB + NEO_KHZ800)   // Targets 9,10,11
+  Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_0, NEO_WRGB + NEO_KHZ800),  // Targets 0,1,2
+  Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_1, NEO_WRGB + NEO_KHZ800),  // Targets 3,4,5
+  Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_2, NEO_WRGB + NEO_KHZ800),  // Targets 6,7,8
+  Adafruit_NeoPixel(TEST_LEDS_PER_PIN, LED_PIN_3, NEO_WRGB + NEO_KHZ800)   // Targets 9,10,11
 };
 
 // ============================================================================
@@ -764,14 +769,14 @@ void updateLEDPin(uint8_t pinIndex) {
   
   Adafruit_NeoPixel &strip = ledStrips[pinIndex];
   uint32_t timestamp = millis();
+  uint16_t numLeds = strip.numPixels();  // Use actual LED count
   
-  // Each pin controls 3 targets (1,881 LEDs = 627 × 3)
+  // Each pin controls 3 targets
   uint8_t startTarget = pinIndex * TARGETS_PER_PIN;
   
-  for (uint16_t ledIndex = 0; ledIndex < LEDS_PER_PIN; ledIndex++) {
-    // Determine which target this LED belongs to (0-2 within this pin's group)
-    uint8_t localTarget = ledIndex / LEDS_PER_TARGET;
-    uint8_t globalTarget = startTarget + localTarget;
+  for (uint16_t ledIndex = 0; ledIndex < numLeds; ledIndex++) {
+    // For testing with limited LEDs, just show pattern from first target on this pin
+    uint8_t globalTarget = startTarget;  // Just use first target for now
     uint16_t ledWithinTarget = ledIndex % LEDS_PER_TARGET;
     
     // Get active pattern for this target
@@ -786,7 +791,7 @@ void updateLEDPin(uint8_t pinIndex) {
     strip.setPixelColor(ledIndex, strip.Color(r, g, b, w));
   }
   
-  strip.show();  // Send to LEDs (~75ms for 1,881 LEDs)
+  strip.show();
   ledPinDirty[pinIndex] = false;
 }
 
@@ -917,11 +922,23 @@ void setup() {
   arenaLightingState.white = 0;
   
   // Initialize LED strips (WS2814 WRGB)
+  Serial.print(F("Initializing "));
+  Serial.print(NUM_LED_PINS);
+  Serial.print(F(" LED strips with "));
+  Serial.print(TEST_LEDS_PER_PIN);
+  Serial.println(F(" LEDs each..."));
+  
   for (uint8_t pin = 0; pin < NUM_LED_PINS; pin++) {
     ledStrips[pin].begin();
     ledStrips[pin].setBrightness(128);  // 50% brightness
     ledStrips[pin].show();  // Initialize all pixels to 'off'
+    Serial.print(F("  Strip "));
+    Serial.print(pin);
+    Serial.print(F(": "));
+    Serial.print(ledStrips[pin].numPixels());
+    Serial.println(F(" LEDs"));
   }
+  Serial.println(F("LED strips initialized"));
   
   // Initialize LED patterns
   initializeDefaultPatterns();
@@ -933,33 +950,30 @@ void setup() {
   // ============================================================================
   Serial.println(F(""));
   Serial.println(F("=== PATTERN TEST MODE ==="));
-  Serial.println(F("Cycling through target states..."));
+  Serial.println(F("Testing with 10 LEDs on pin D2"));
   
   // Simple direct test first - bypass pattern system
-  Serial.println(F("Direct test: First 3 LEDs red/green/white"));
+  Serial.println(F("\n[DIRECT TEST] First 3 LEDs: red, green, white"));
   // Color() takes (R, G, B, W) - library handles WRGB byte reordering
+  ledStrips[0].clear();
   ledStrips[0].setPixelColor(0, ledStrips[0].Color(255, 0, 0, 0));  // Red
   ledStrips[0].setPixelColor(1, ledStrips[0].Color(0, 255, 0, 0));  // Green
   ledStrips[0].setPixelColor(2, ledStrips[0].Color(0, 0, 0, 255));  // White
   ledStrips[0].show();
+  Serial.println(F("Showing for 3 seconds..."));
   delay(3000);
   ledStrips[0].clear();
   ledStrips[0].show();
   
-  Serial.println(F("Now testing pattern system..."));
+  Serial.println(F("\n[PATTERN TEST] Cycling states..."));
   
   // Test pattern cycling - show all 3 states for target 0
-  for (int cycle = 0; cycle < 3; cycle++) {
+  for (int cycle = 0; cycle < 2; cycle++) {
     // IDLE state (cyan solid)
-    Serial.print(F("Cycle ")); Serial.print(cycle + 1);
-    Serial.println(F(" - State: IDLE (cyan)"));
+    Serial.print(F("\nCycle ")); Serial.print(cycle + 1);
+    Serial.println(F(": IDLE (cyan solid)"));
     currentPatternState[0] = PATTERN_STATE_IDLE;
     markTargetLEDsDirty(0);
-    Serial.print(F("Dirty flags: "));
-    for (int i = 0; i < NUM_LED_PINS; i++) {
-      Serial.print(ledPinDirty[i] ? '1' : '0');
-    }
-    Serial.println();
     updateDirtyLEDs();
     delay(3000);
     
@@ -983,6 +997,7 @@ void setup() {
   }
   
   // Reset to IDLE
+  Serial.println(F("\nResetting to IDLE"));
   currentPatternState[0] = PATTERN_STATE_IDLE;
   markTargetLEDsDirty(0);
   updateDirtyLEDs();
