@@ -204,12 +204,15 @@ PatternDescriptor targetPatterns[NUM_TARGETS][3];  // 12 targets × 3 states = 3
 PatternState currentPatternState[NUM_TARGETS];     // Current active pattern per target (12 bytes)
 bool ledPinDirty[NUM_LED_PINS] = {false};          // Dirty flags for 4 pins (4 bytes)
 
+// TEMPORARY: Test with minimal LEDs to isolate protocol issue
+#define TEST_LED_COUNT 3  // Just test 3 LEDs for diagnostics
+
 // NeoPixel Strip Objects (4 strips, one per data pin)
 Adafruit_NeoPixel ledStrips[NUM_LED_PINS] = {
-  Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_0, NEO_WRGB + NEO_KHZ800),
-  Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_1, NEO_WRGB + NEO_KHZ800),
-  Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_2, NEO_WRGB + NEO_KHZ800),
-  Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_3, NEO_WRGB + NEO_KHZ800)
+  Adafruit_NeoPixel(TEST_LED_COUNT, LED_PIN_0, NEO_GRB + NEO_KHZ800),  // Try GRB (most common)
+  Adafruit_NeoPixel(TEST_LED_COUNT, LED_PIN_1, NEO_WRGB + NEO_KHZ800),
+  Adafruit_NeoPixel(TEST_LED_COUNT, LED_PIN_2, NEO_WRGB + NEO_KHZ800),
+  Adafruit_NeoPixel(TEST_LED_COUNT, LED_PIN_3, NEO_WRGB + NEO_KHZ800)
 };
 
 // ============================================================================
@@ -926,62 +929,106 @@ void setup() {
   initializeDefaultPatterns();
   
   // ============================================================================
-  // TEMPORARY: DIAGNOSTIC LED TEST - Tests first 10 LEDs only
+  // TEMPORARY: PROTOCOL DETECTION TEST - Try different configurations
   // ============================================================================
-  Serial.println("DIAGNOSTIC: Starting LED test on Pin D2...");
-  Serial.println("Testing first 10 LEDs with different patterns:");
+  Serial.println("=== LED PROTOCOL DETECTION TEST ===");
+  Serial.println("Testing 3 LEDs on Pin D2 with multiple protocols...");
+  Serial.println("Watch for ANY light (even wrong colors means progress!)");
+  Serial.println("");
   
-  // Test 1: Red on first 10 LEDs (RGB order)
-  Serial.println("Test 1: RED (R=255, G=0, B=0)");
-  for (int i = 0; i < 10; i++) {
-    ledStrips[0].setPixelColor(i, ledStrips[0].Color(255, 0, 0, 0));  // R, G, B, W
+  // Verify pin is set to OUTPUT mode
+  pinMode(LED_PIN_0, OUTPUT);
+  digitalWrite(LED_PIN_0, LOW);
+  delay(100);
+  
+  Serial.println("Pin D2 initialized. Testing protocols:");
+  
+  // Test 1: NEO_GRB + 800kHz (WS2812B - MOST COMMON)
+  Serial.println("\n[TEST 1] NEO_GRB + 800kHz (WS2812B/WS2813)");
+  {
+    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_GRB + NEO_KHZ800);
+    test.begin();
+    test.setBrightness(255);
+    test.setPixelColor(0, test.Color(255, 0, 0));  // Red
+    test.setPixelColor(1, test.Color(0, 255, 0));  // Green
+    test.setPixelColor(2, test.Color(0, 0, 255));  // Blue
+    test.show();
+    delay(3000);
+    test.clear();
+    test.show();
   }
-  ledStrips[0].show();
-  delay(2000);
   
-  // Test 2: Green on first 10 LEDs
-  Serial.println("Test 2: GREEN (R=0, G=255, B=0)");
-  for (int i = 0; i < 10; i++) {
-    ledStrips[0].setPixelColor(i, ledStrips[0].Color(0, 255, 0, 0));  // R, G, B, W
+  // Test 2: NEO_GRBW + 800kHz (SK6812 RGBW)
+  Serial.println("[TEST 2] NEO_GRBW + 800kHz (SK6812 RGBW)");
+  {
+    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_GRBW + NEO_KHZ800);
+    test.begin();
+    test.setBrightness(255);
+    test.setPixelColor(0, test.Color(255, 0, 0, 0));     // Red
+    test.setPixelColor(1, test.Color(0, 255, 0, 0));     // Green
+    test.setPixelColor(2, test.Color(0, 0, 0, 255));     // White
+    test.show();
+    delay(3000);
+    test.clear();
+    test.show();
   }
-  ledStrips[0].show();
-  delay(2000);
   
-  // Test 3: Blue on first 10 LEDs
-  Serial.println("Test 3: BLUE (R=0, G=0, B=255)");
-  for (int i = 0; i < 10; i++) {
-    ledStrips[0].setPixelColor(i, ledStrips[0].Color(0, 0, 255, 0));  // R, G, B, W
+  // Test 3: NEO_WRGB + 800kHz (WS2814 - per datasheet)
+  Serial.println("[TEST 3] NEO_WRGB + 800kHz (WS2814 per spec)");
+  {
+    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_WRGB + NEO_KHZ800);
+    test.begin();
+    test.setBrightness(255);
+    test.setPixelColor(0, test.Color(255, 0, 0, 0));     // Red
+    test.setPixelColor(1, test.Color(0, 255, 0, 0));     // Green
+    test.setPixelColor(2, test.Color(0, 0, 0, 255));     // White
+    test.show();
+    delay(3000);
+    test.clear();
+    test.show();
   }
-  ledStrips[0].show();
-  delay(2000);
   
-  // Test 4: White channel on first 10 LEDs
-  Serial.println("Test 4: WHITE channel (W=255)");
-  for (int i = 0; i < 10; i++) {
-    ledStrips[0].setPixelColor(i, ledStrips[0].Color(0, 0, 0, 255));  // R, G, B, W
+  // Test 4: NEO_RGB + 400kHz (WS2811 - older/slower)
+  Serial.println("[TEST 4] NEO_RGB + 400kHz (WS2811/older chips)");
+  {
+    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_RGB + NEO_KHZ400);
+    test.begin();
+    test.setBrightness(255);
+    test.setPixelColor(0, test.Color(255, 0, 0));     // Red
+    test.setPixelColor(1, test.Color(0, 255, 0));     // Green
+    test.setPixelColor(2, test.Color(0, 0, 255));     // Blue
+    test.show();
+    delay(3000);
+    test.clear();
+    test.show();
   }
-  ledStrips[0].show();
-  delay(2000);
   
-  // Test 5: All channels dim
-  Serial.println("Test 5: ALL CHANNELS (R=64, G=64, B=64, W=64)");
-  for (int i = 0; i < 10; i++) {
-    ledStrips[0].setPixelColor(i, ledStrips[0].Color(64, 64, 64, 64));  // R, G, B, W
+  // Test 5: NEO_GRB + 400kHz
+  Serial.println("[TEST 5] NEO_GRB + 400kHz (WS2811 GRB variant)");
+  {
+    Adafruit_NeoPixel test(3, LED_PIN_0, NEO_GRB + NEO_KHZ400);
+    test.begin();
+    test.setBrightness(255);
+    test.setPixelColor(0, test.Color(255, 0, 0));     // Red
+    test.setPixelColor(1, test.Color(0, 255, 0));     // Green
+    test.setPixelColor(2, test.Color(0, 0, 255));     // Blue
+    test.show();
+    delay(3000);
+    test.clear();
+    test.show();
   }
-  ledStrips[0].show();
-  delay(2000);
   
-  // Clear
-  Serial.println("Test 6: OFF (clearing all)");
-  ledStrips[0].clear();
-  ledStrips[0].show();
-  delay(1000);
-  
-  Serial.println("DIAGNOSTIC: Test complete. If you saw nothing, check:");
-  Serial.println("  1. Data wire connected to D2 (Arduino pin 2)");
-  Serial.println("  2. Ground common between Arduino and LED power supply");
-  Serial.println("  3. 5V logic level on data line");
-  Serial.println("  4. Strip might need different timing (SK6812/WS2812B)");
+  Serial.println("\n=== TEST COMPLETE ===");
+  Serial.println("Results:");
+  Serial.println("  - If you saw ANY lights: Note which test # worked!");
+  Serial.println("  - If colors were wrong: Still good! Just need to remap channels");
+  Serial.println("  - If NOTHING at all:");
+  Serial.println("      1. Check D2 connection to strip's DI (data input)");
+  Serial.println("      2. Verify Arduino GND connects to LED power GND");
+  Serial.println("      3. Try adding 330 ohm resistor between D2 and DI");
+  Serial.println("      4. Check if strip needs level shifter (5V->5V logic)");
+  Serial.println("      5. Measure voltage on D2 with multimeter while running");
+  Serial.println("\nEntering normal operation (no LEDs will update)...");
   // ============================================================================
   // END TEMPORARY DIAGNOSTIC
   // ============================================================================
