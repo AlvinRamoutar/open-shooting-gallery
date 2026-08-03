@@ -965,18 +965,26 @@ void setup() {
   Serial.println(F("\n[DIRECT TEST] First 3 LEDs: red, green, white"));
   // Color() takes (R, G, B, W) - library handles WRGB byte reordering
   Serial.print(F("Strip has ")); Serial.print(ledStrips[0].numPixels()); Serial.println(F(" pixels"));
+  
+  // Explicitly clear ALL LEDs first
+  Serial.println(F("Clearing all LEDs..."));
   ledStrips[0].clear();
+  ledStrips[0].show();
+  delay(1000);
+  
   Serial.println(F("Setting pixels 0,1,2..."));
   ledStrips[0].setPixelColor(0, ledStrips[0].Color(255, 0, 0, 0));  // Red
   ledStrips[0].setPixelColor(1, ledStrips[0].Color(0, 255, 0, 0));  // Green
   ledStrips[0].setPixelColor(2, ledStrips[0].Color(0, 0, 0, 255));  // White
   Serial.println(F("Calling show()..."));
   ledStrips[0].show();
-  Serial.println(F("Showing for 3 seconds..."));
-  delay(3000);
+  Serial.println(F("Showing for 5 seconds..."));
+  Serial.println(F("CHECK: Do ONLY the first 3 LEDs light up?"));
+  delay(5000);
   Serial.println(F("Clearing..."));
   ledStrips[0].clear();
   ledStrips[0].show();
+  delay(1000);
   
   Serial.println(F("\n[PATTERN TEST] Cycling states..."));
   
