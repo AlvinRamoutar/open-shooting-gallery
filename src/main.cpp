@@ -1,17 +1,50 @@
 #include <Arduino.h>
-#include <Adafruit_PWMServoDriver.h>
 
 // ============================================================================
-// HARDWARE CONFIGURATION
+// HARDWARE CONFIGURATION - DUAL BOARD ARCHITECTURE
 // ============================================================================
-// Enable/disable subsystems based on target hardware
+// System Architecture:
+// Raspberry Pi (SERVER) <--USB--> Arduino Uno R3 (MAIN) <--UART--> TTGO LoRa32 (LIGHTING)
+//
+// Board Modes:
+// - MODE_MAIN_CONTROLLER: Arduino Uno R3 (servos, game logic, protocol routing)
+// - MODE_LIGHTING_CONTROLLER: TTGO LoRa32 v1 (LED control, OLED display)
+//
+// Build for each target by changing BOARD_MODE:
+//   platformio run -e uno-main       (Uno R3 main controller)
+//   platformio run -e ttgo-lighting  (TTGO lighting controller)
+// ============================================================================
 
-// LED System (requires WeMos D1 R32, ESP32, or similar with 520KB+ RAM)
-// Disable this for Arduino Uno R3 to preserve RAM for servo/game logic
-#define ENABLE_LED_SYSTEM false  // Set to true for ESP32/WeMos D1 R32, false for Uno R3
+#define MODE_MAIN_CONTROLLER 1
+#define MODE_LIGHTING_CONTROLLER 2
 
-#if ENABLE_LED_SYSTEM
-  #include <Adafruit_NeoPixel.h>
+// Set active board mode (override via platformio.ini build_flags)
+#ifndef BOARD_MODE
+  #if defined(ESP32)
+    #define BOARD_MODE MODE_LIGHTING_CONTROLLER
+  #else
+    #define BOARD_MODE MODE_MAIN_CONTROLLER
+  #endif
+#endif
+
+// LED System enabled only on lighting controller (TTGO has 520KB RAM)
+#if BOARD_MODE == MODE_LIGHTING_CONTROLLER
+  #define ENABLE_LED_SYSTEM true
+#else
+  #define ENABLE_LED_SYSTEM false
+#endif
+
+// Platform-specific includes
+#if BOARD_MODE == MODE_MAIN_CONTROLLER
+  #include <Adafruit_PWMServoDriver.h>  // Servo shield (Uno R3 only)
+  #include <SoftwareSerial.h>           // For UART to TTGO
+#endif
+
+#if BOARD_MODE == MODE_LIGHTING_CONTROLLER
+  #include <Adafruit_NeoPixel.h>        // LED strips (TTGO only)
+  #include <Adafruit_SSD1306.h>         // OLED display (TTGO only)
+  #include <Adafruit_GFX.h>             // Graphics library for OLED
+  #include <Wire.h>                     // I2C for OLED
 #endif
 
 // ============================================================================
@@ -95,18 +128,48 @@
 #define TARGET_ID_ALL 13
 #define TARGET_ID_CONTROLLER 15
 
-// LED System Constants (WS2814 WRGB, 24V, 5V logic)
+// LED System Constants (WS2814 WRGB, 24V, 5V logic via BSS138 level shifter)
 #define LEDS_PER_TARGET 627       // 70cm @ 896 LEDs/m = 627 LEDs
 #define TOTAL_LEDS 7524           // 627 LEDs × 12 targets
 #define TARGETS_PER_PIN 3         // 4-pin architecture: 3 targets per data pin
-#define NUM_LED_PINS 4            // D2, D3, D4, D5
+#define NUM_LED_PINS 4            // 4 GPIO pins (platform-specific)
 #define LEDS_PER_PIN 1881         // 627 × 3 = 1,881 LEDs per pin
 
-// LED Pin Assignments (4-pin hybrid architecture)
-#define LED_PIN_0 2               // Targets 0, 1, 2
-#define LED_PIN_1 3               // Targets 3, 4, 5
-#define LED_PIN_2 4               // Targets 6, 7, 8
-#define LED_PIN_3 5               // Targets 9, 10, 11
+// LED Pin Assignments (platform-specific)
+#if defined(ESP32)
+  // TTGO LoRa32 v1: Use GPIO pins that don't conflict with LoRa/OLED
+  #define LED_PIN_0 12            // Targets 0, 1, 2  (GPIO12)
+  #define LED_PIN_1 13            // Targets 3, 4, 5  (GPIO13)
+  #define LED_PIN_2 14            // Targets 6, 7, 8  (GPIO14)
+  #define LED_PIN_3 27            // Targets 9, 10, 11 (GPIO27)
+#else
+  // Arduino Uno R3: Digital pins D2-D5 (unused, for reference)
+  #define LED_PIN_0 2             // Targets 0, 1, 2
+  #define LED_PIN_1 3             // Targets 3, 4, 5
+  #define LED_PIN_2 4             // Targets 6, 7, 8
+  #define LED_PIN_3 5             // Targets 9, 10, 11
+#endif
+
+// UART Communication Pins
+#if BOARD_MODE == MODE_MAIN_CONTROLLER
+  // Arduino Uno R3: SoftwareSerial to TTGO (D8=TX, D9=RX)
+  // Note: UART0 (D0/D1) is used for USB/Server communication
+  #define LIGHTING_SERIAL_RX 8
+  #define LIGHTING_SERIAL_TX 9
+#elif BOARD_MODE == MODE_LIGHTING_CONTROLLER
+  // TTGO LoRa32 v1: Hardware UART2 (GPIO22=RX, GPIO17=TX)
+  // Note: GPIO16 conflicts with OLED RST, so using GPIO22 for RX
+  #define UART2_RX_PIN 22
+  #define UART2_TX_PIN 17
+#endif
+
+// OLED Display Configuration (TTGO LoRa32 v1 only)
+#if BOARD_MODE == MODE_LIGHTING_CONTROLLER
+  #define SCREEN_WIDTH 128
+  #define SCREEN_HEIGHT 64
+  #define OLED_RESET 16            // GPIO16 = OLED RST
+  #define OLED_ADDRESS 0x3C        // I2C address for SSD1306
+#endif
 
 // Servo System Constants (Adafruit 16-Channel PWM Shield via I2C)
 #define SERVO_FREQ 50             // Standard servo frequency (50Hz)
@@ -214,6 +277,12 @@ enum PatternState : uint8_t {
   PATTERN_STATE_HIT = 2      // Target was hit
 };
 
+// LED Control Mode (how LEDs are updated)
+enum LEDControlMode : uint8_t {
+  LED_MODE_PATTERN = 0,      // Use pattern descriptors (algorithmic generation)
+  LED_MODE_DIRECT = 1        // Use direct pixel control (protocol-driven)
+};
+
 // Pattern Descriptor (8 bytes) - defines how pattern should look
 struct PatternDescriptor {
   uint8_t type;           // PatternType (1 byte)
@@ -249,8 +318,24 @@ LightingState arenaLightingState;                  // Arena relay lighting state
 unsigned long gameStartTime = 0;
 unsigned long gameRunTime = 0;  // in milliseconds
 
-// Servo Control (Adafruit 16-Channel PWM Shield)
-Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+// Board-Specific Hardware Objects
+#if BOARD_MODE == MODE_MAIN_CONTROLLER
+  // Servo Control (Adafruit 16-Channel PWM Shield via I2C)
+  Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+  
+  // SoftwareSerial for communication with TTGO lighting controller
+  SoftwareSerial LightingSerial(LIGHTING_SERIAL_RX, LIGHTING_SERIAL_TX);  // RX=D8, TX=D9
+#endif
+
+#if BOARD_MODE == MODE_LIGHTING_CONTROLLER
+  // OLED Display (128x64 SSD1306 via I2C)
+  Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+  
+  // Debug message buffer for OLED
+  String displayLines[4] = {"", "", "", ""};  // 4 lines of text
+  unsigned long lastDisplayUpdate = 0;
+  #define DISPLAY_UPDATE_INTERVAL 100  // Update OLED every 100ms
+#endif
 
 #if ENABLE_LED_SYSTEM
 
@@ -259,10 +344,12 @@ PatternDescriptor targetPatterns[NUM_TARGETS][3];  // 12 targets × 3 states = 3
 PatternState currentPatternState[NUM_TARGETS];     // Current active pattern per target (12 bytes)
 bool ledPinDirty[NUM_LED_PINS] = {false};          // Dirty flags for 4 pins (4 bytes)
 
+// LED Control Mode per target
+LEDControlMode ledControlMode[NUM_TARGETS];        // Pattern vs Direct control per target (12 bytes)
+
 // NeoPixel Strip Objects (4 strips, one per data pin)
 // Protocol: NEO_WRGB + NEO_KHZ800 (verified with WS2814 LEDs)
-// NOTE: Requires WeMos D1 R32 or similar ESP32 board (520KB RAM)
-// Arduino Uno R3 (2KB RAM) cannot handle 30KB LED buffer allocation
+// NOTE: Now runs on TTGO LoRa32 v1 with 520KB RAM - can handle full 30KB buffers!
 Adafruit_NeoPixel ledStrips[NUM_LED_PINS] = {
   Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_0, NEO_WRGB + NEO_KHZ800),  // Targets 0,1,2
   Adafruit_NeoPixel(LEDS_PER_PIN, LED_PIN_1, NEO_WRGB + NEO_KHZ800),  // Targets 3,4,5
@@ -339,6 +426,20 @@ bool evaluateJuke(uint8_t jukePercent);
 bool evaluateRandomSpeed(uint8_t randomSpeedPercent);
 uint8_t getRandomSpeed();
 
+#if BOARD_MODE == MODE_MAIN_CONTROLLER
+// Protocol Forwarding Functions (Main Controller Only)
+void forwardLightingProtocol(uint32_t word1, uint32_t word2, uint32_t word3);
+void forwardDebugMessage(const char* message);
+#endif
+
+#if BOARD_MODE == MODE_LIGHTING_CONTROLLER
+// OLED Display Functions (Lighting Controller Only)
+void initializeOLED();
+void updateOLEDDisplay();
+void addDisplayLine(const String& text);
+void displayDebug(const char* message);
+#endif
+
 #if ENABLE_LED_SYSTEM
 
 // Lighting Protocol Handler
@@ -349,6 +450,14 @@ void markTargetLEDsDirty(uint8_t targetId);
 void updatePatternStates();
 void updateDirtyLEDs();
 void initializeDefaultPatterns();
+
+// Direct LED Control Functions (LIGHTING_CONTROLLER only)
+#if BOARD_MODE == MODE_LIGHTING_CONTROLLER
+void setTargetLEDRange(uint8_t targetId, uint16_t startLed, uint16_t endLed, uint8_t r, uint8_t g, uint8_t b, uint8_t w, uint8_t brightness);
+void setTargetLED(uint8_t targetId, uint16_t ledIndex, uint8_t r, uint8_t g, uint8_t b, uint8_t w);
+void clearTargetLEDs(uint8_t targetId);
+void setTargetControlMode(uint8_t targetId, LEDControlMode mode);
+#endif
 
 #endif // ENABLE_LED_SYSTEM
 
@@ -448,6 +557,8 @@ void sendReturnProtocol(uint8_t mode, uint8_t targetId, uint8_t status) {
 // ============================================================================
 
 bool readSerialWord(uint32_t &word) {
+  #if BOARD_MODE == MODE_MAIN_CONTROLLER
+  // Main controller reads from USB Serial (server)
   if (Serial.available() >= 4) {
     uint8_t bytes[4];
     Serial.readBytes(bytes, 4);
@@ -459,6 +570,22 @@ bool readSerialWord(uint32_t &word) {
            ((uint32_t)bytes[3]);
     return true;
   }
+  
+  #elif BOARD_MODE == MODE_LIGHTING_CONTROLLER
+  // Lighting controller reads from UART2 (Uno R3)
+  if (Serial2.available() >= 4) {
+    uint8_t bytes[4];
+    Serial2.readBytes(bytes, 4);
+    
+    // Reconstruct 32-bit word (big-endian)
+    word = ((uint32_t)bytes[0] << 24) |
+           ((uint32_t)bytes[1] << 16) |
+           ((uint32_t)bytes[2] << 8) |
+           ((uint32_t)bytes[3]);
+    return true;
+  }
+  #endif
+  
   return false;
 }
 
@@ -474,12 +601,15 @@ void processSerialData() {
     
     switch (protocolId) {
       case PROTOCOL_GENERAL:
+        #if BOARD_MODE == MODE_MAIN_CONTROLLER
         parseGeneralProtocol(word, generalConfig);
         debugOutputGeneralProtocol("RX", generalConfig);  // Debug output
         handleGeneralProtocol();  // Immediately update state
+        #endif
         break;
         
       case PROTOCOL_TARGET:
+        #if BOARD_MODE == MODE_MAIN_CONTROLLER
         {
           TargetProtocol config;
           parseTargetProtocol(word, config);
@@ -498,30 +628,47 @@ void processSerialData() {
             }
           }
         }
+        #endif
         break;
         
-#if ENABLE_LED_SYSTEM
       case PROTOCOL_LIGHTING:
         {
           // Lighting protocol uses 3 words (96 bits total)
           // Read the next 2 words to complete the lighting protocol
           uint32_t word2, word3;
           if (readSerialWord(word2) && readSerialWord(word3)) {
+            
+            #if BOARD_MODE == MODE_MAIN_CONTROLLER
+            // MAIN CONTROLLER: Forward to TTGO lighting controller
+            forwardLightingProtocol(word, word2, word3);
+            
+            #elif ENABLE_LED_SYSTEM
+            // LIGHTING CONTROLLER: Process locally
             LightingProtocol config;
             parseLightingProtocol(word, word2, word3, config);
             debugOutputLightingProtocol("RX", config);  // Debug output
             handleLightingProtocol(config);  // Immediately apply
+            
+            // Update OLED with lighting info
+            char debugMsg[32];
+            snprintf(debugMsg, sizeof(debugMsg), "T%d: R%d G%d B%d", 
+                     config.targetId, config.red, config.green, config.blue);
+            displayDebug(debugMsg);
+            #endif
           } else {
             // Incomplete lighting protocol received
+            #if BOARD_MODE == MODE_MAIN_CONTROLLER
             sendReturnProtocol(RETURN_MODE_ERROR, TARGET_ID_CONTROLLER, STATUS_IDLE);
+            #endif
           }
         }
         break;
-#endif // ENABLE_LED_SYSTEM
         
       default:
         // Unknown protocol
+        #if BOARD_MODE == MODE_MAIN_CONTROLLER
         sendReturnProtocol(RETURN_MODE_ERROR, TARGET_ID_CONTROLLER, STATUS_IDLE);
+        #endif
         break;
     }
   }
@@ -634,14 +781,33 @@ void handleLightingProtocol(LightingProtocol &config) {
     state.blue = config.blue;
     state.white = config.white;
     
-    // TODO: Update LED strip for this target
-    // - Calculate absolute LED positions: (targetId * LEDS_PER_TARGET) + startLedRange
-    // - Apply RGBW color to range [startLedRange, endLedRange]
-    // - Apply brightness scaling
-    // - Update SPI LED controller
+    #if BOARD_MODE == MODE_LIGHTING_CONTROLLER
+    // Direct LED control now available with TTGO's abundant RAM!
+    if (state.isOn) {
+      // Switch to direct control mode
+      setTargetControlMode(config.targetId, LED_MODE_DIRECT);
+      
+      // Apply color to LED range [startLedRange, endLedRange]
+      uint16_t startLed = config.startLedRange;
+      uint16_t endLed = config.endLedRange;
+      
+      // Default to full target range if not specified
+      if (startLed == 0 && endLed == 0) {
+        endLed = LEDS_PER_TARGET - 1;
+      }
+      
+      // Set LED range with color and brightness
+      setTargetLEDRange(config.targetId, startLed, endLed, 
+                       state.red, state.green, state.blue, state.white, 
+                       state.brightness);
+    } else {
+      // Turn off target LEDs
+      clearTargetLEDs(config.targetId);
+    }
+    #endif
     
   } else if (config.targetId == LIGHTING_ID_ALL_TARGETS) {
-    // All target LEDs via SPI
+    // All target LEDs
     for (int i = 0; i < NUM_TARGETS; i++) {
       LightingState &state = targetLightingStates[i];
       state.isOn = (config.mode == LIGHTING_MODE_ON);
@@ -650,8 +816,18 @@ void handleLightingProtocol(LightingProtocol &config) {
       state.green = config.green;
       state.blue = config.blue;
       state.white = config.white;
+      
+      #if BOARD_MODE == MODE_LIGHTING_CONTROLLER
+      if (state.isOn) {
+        setTargetControlMode(i, LED_MODE_DIRECT);
+        setTargetLEDRange(i, 0, LEDS_PER_TARGET - 1, 
+                         state.red, state.green, state.blue, state.white, 
+                         state.brightness);
+      } else {
+        clearTargetLEDs(i);
+      }
+      #endif
     }
-    // TODO: Update all target LED strips
     
   } else if (config.targetId == LIGHTING_ID_ARENA) {
     // Arena lighting via relay
@@ -678,8 +854,10 @@ void handleLightingProtocol(LightingProtocol &config) {
 
 #endif // ENABLE_LED_SYSTEM
 
+#if BOARD_MODE == MODE_MAIN_CONTROLLER
+
 // ============================================================================
-// GAME LOGIC
+// GAME LOGIC (Main Controller Only)
 // ============================================================================
 
 void updateGameState() {
@@ -1010,6 +1188,8 @@ void updateTargetMovement(uint8_t targetId) {
   }
 }
 
+#endif // MODE_MAIN_CONTROLLER
+
 #if ENABLE_LED_SYSTEM
 
 // ============================================================================
@@ -1144,15 +1324,37 @@ void updateLEDPin(uint8_t pinIndex) {
   if (pinIndex >= NUM_LED_PINS) return;
   
   Adafruit_NeoPixel &strip = ledStrips[pinIndex];
+  
+  #if BOARD_MODE == MODE_LIGHTING_CONTROLLER
+  // Check if any target on this pin is in DIRECT control mode
+  // If so, just show the buffer (already set by direct control functions)
+  uint8_t startTarget = pinIndex * TARGETS_PER_PIN;
+  bool anyDirectControl = false;
+  for (uint8_t i = 0; i < TARGETS_PER_PIN && (startTarget + i) < NUM_TARGETS; i++) {
+    if (ledControlMode[startTarget + i] == LED_MODE_DIRECT) {
+      anyDirectControl = true;
+      break;
+    }
+  }
+  
+  if (anyDirectControl) {
+    // Direct control active - just update the strip without regenerating
+    strip.show();
+    ledPinDirty[pinIndex] = false;
+    return;
+  }
+  #endif
+  
+  // PATTERN mode - generate colors algorithmically
   uint32_t timestamp = millis();
   uint16_t numLeds = strip.numPixels();  // Use actual LED count
   
   // Each pin controls 3 targets
-  uint8_t startTarget = pinIndex * TARGETS_PER_PIN;
+  uint8_t startTargetIdx = pinIndex * TARGETS_PER_PIN;
   
   for (uint16_t ledIndex = 0; ledIndex < numLeds; ledIndex++) {
     // For testing with limited LEDs, just show pattern from first target on this pin
-    uint8_t globalTarget = startTarget;  // Just use first target for now
+    uint8_t globalTarget = startTargetIdx;  // Just use first target for now
     uint16_t ledWithinTarget = ledIndex % LEDS_PER_TARGET;
     
     // Get active pattern for this target
@@ -1190,6 +1392,13 @@ void markTargetLEDsDirty(uint8_t targetId) {
 // Update pattern states based on target activity
 void updatePatternStates() {
   for (uint8_t targetId = 0; targetId < NUM_TARGETS; targetId++) {
+    #if BOARD_MODE == MODE_LIGHTING_CONTROLLER
+    // Skip targets in DIRECT control mode
+    if (ledControlMode[targetId] == LED_MODE_DIRECT) {
+      continue;
+    }
+    #endif
+    
     PatternState oldState = currentPatternState[targetId];
     PatternState newState;
     
@@ -1257,6 +1466,7 @@ void initializeDefaultPatterns() {
   // Initialize all targets to IDLE pattern
   for (uint8_t i = 0; i < NUM_TARGETS; i++) {
     currentPatternState[i] = PATTERN_STATE_IDLE;
+    ledControlMode[i] = LED_MODE_PATTERN;  // Start in pattern mode
   }
   
   // Mark all pins dirty for initial update
@@ -1265,18 +1475,300 @@ void initializeDefaultPatterns() {
   }
 }
 
+#if BOARD_MODE == MODE_LIGHTING_CONTROLLER
+
+// ============================================================================
+// DIRECT LED CONTROL FUNCTIONS (Lighting Controller Only)
+// ============================================================================
+// These functions provide direct per-LED control, enabled by TTGO's 520KB RAM.
+// Use these for precise LED control via protocol commands.
+// ============================================================================
+
+/**
+ * Set control mode for a target (pattern-based or direct control)
+ */
+void setTargetControlMode(uint8_t targetId, LEDControlMode mode) {
+  if (targetId >= NUM_TARGETS) return;
+  ledControlMode[targetId] = mode;
+}
+
+/**
+ * Set a range of LEDs within a target to a specific color
+ * @param targetId Target number (0-11)
+ * @param startLed Starting LED index within target (0-626)
+ * @param endLed Ending LED index within target (0-626)
+ * @param r Red value (0-255)
+ * @param g Green value (0-255)
+ * @param b Blue value (0-255)
+ * @param w White value (0-255)
+ * @param brightness Brightness scaling (0-100)
+ */
+void setTargetLEDRange(uint8_t targetId, uint16_t startLed, uint16_t endLed, 
+                       uint8_t r, uint8_t g, uint8_t b, uint8_t w, uint8_t brightness) {
+  if (targetId >= NUM_TARGETS) return;
+  if (startLed >= LEDS_PER_TARGET) return;
+  if (endLed >= LEDS_PER_TARGET) endLed = LEDS_PER_TARGET - 1;
+  if (startLed > endLed) return;
+  
+  // Calculate which pin controls this target
+  uint8_t pinIndex = targetId / TARGETS_PER_PIN;
+  uint8_t targetWithinPin = targetId % TARGETS_PER_PIN;
+  
+  // Calculate absolute LED position on the strip
+  uint16_t absoluteStartLed = targetWithinPin * LEDS_PER_TARGET + startLed;
+  uint16_t absoluteEndLed = targetWithinPin * LEDS_PER_TARGET + endLed;
+  
+  // Apply brightness scaling (0-100 scale)
+  uint8_t scaledR = (r * brightness) / 100;
+  uint8_t scaledG = (g * brightness) / 100;
+  uint8_t scaledB = (b * brightness) / 100;
+  uint8_t scaledW = (w * brightness) / 100;
+  
+  // Set LED colors in the strip
+  Adafruit_NeoPixel &strip = ledStrips[pinIndex];
+  for (uint16_t led = absoluteStartLed; led <= absoluteEndLed; led++) {
+    if (led < strip.numPixels()) {
+      strip.setPixelColor(led, strip.Color(scaledR, scaledG, scaledB, scaledW));
+    }
+  }
+  
+  // Mark pin as dirty for update
+  ledPinDirty[pinIndex] = true;
+}
+
+/**
+ * Set a single LED within a target to a specific color
+ * @param targetId Target number (0-11)
+ * @param ledIndex LED index within target (0-626)
+ * @param r Red value (0-255)
+ * @param g Green value (0-255)
+ * @param b Blue value (0-255)
+ * @param w White value (0-255)
+ */
+void setTargetLED(uint8_t targetId, uint16_t ledIndex, uint8_t r, uint8_t g, uint8_t b, uint8_t w) {
+  if (targetId >= NUM_TARGETS) return;
+  if (ledIndex >= LEDS_PER_TARGET) return;
+  
+  // Calculate which pin controls this target
+  uint8_t pinIndex = targetId / TARGETS_PER_PIN;
+  uint8_t targetWithinPin = targetId % TARGETS_PER_PIN;
+  
+  // Calculate absolute LED position on the strip
+  uint16_t absoluteLedIndex = targetWithinPin * LEDS_PER_TARGET + ledIndex;
+  
+  // Set LED color
+  Adafruit_NeoPixel &strip = ledStrips[pinIndex];
+  if (absoluteLedIndex < strip.numPixels()) {
+    strip.setPixelColor(absoluteLedIndex, strip.Color(r, g, b, w));
+  }
+  
+  // Mark pin as dirty for update
+  ledPinDirty[pinIndex] = true;
+}
+
+/**
+ * Clear all LEDs for a target (set to black/off)
+ * @param targetId Target number (0-11)
+ */
+void clearTargetLEDs(uint8_t targetId) {
+  if (targetId >= NUM_TARGETS) return;
+  
+  // Set all LEDs in target range to black (off)
+  setTargetLEDRange(targetId, 0, LEDS_PER_TARGET - 1, 0, 0, 0, 0, 100);
+}
+
+#endif // MODE_LIGHTING_CONTROLLER
+
 #endif // ENABLE_LED_SYSTEM
+
+// ============================================================================
+// OLED DISPLAY FUNCTIONS (TTGO LoRa32 v1 - Lighting Controller Only)
+// ============================================================================
+
+#if BOARD_MODE == MODE_LIGHTING_CONTROLLER
+
+void initializeOLED() {
+  // Initialize OLED display with I2C
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    // Continue anyway - OLED is non-critical
+  } else {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println(F("LIGHTING CTRL"));
+    display.println(F("Initializing..."));
+    display.display();
+    Serial.println(F("OLED display initialized"));
+  }
+}
+
+void updateOLEDDisplay() {
+  // Rate limit display updates to avoid flickering
+  if (millis() - lastDisplayUpdate < DISPLAY_UPDATE_INTERVAL) {
+    return;
+  }
+  lastDisplayUpdate = millis();
+  
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  
+  // Line 0: Title
+  display.setCursor(0, 0);
+  display.println(F("LIGHTING CONTROLLER"));
+  
+  // Lines 1-4: Debug messages (most recent 3 lines)
+  for (int i = 1; i < 4; i++) {
+    display.setCursor(0, i * 16);
+    display.println(displayLines[i]);
+  }
+  
+  display.display();
+}
+
+void addDisplayLine(const String& text) {
+  // Shift lines up
+  for (int i = 0; i < 3; i++) {
+    displayLines[i] = displayLines[i + 1];
+  }
+  // Add new line at bottom
+  displayLines[3] = text;
+}
+
+void displayDebug(const char* message) {
+  addDisplayLine(String(message));
+  Serial.println(message);  // Also print to USB serial for logging
+}
+
+#endif // MODE_LIGHTING_CONTROLLER
+
+// ============================================================================
+// PROTOCOL FORWARDING (Arduino Uno R3 - Main Controller Only)
+// ============================================================================
+
+#if BOARD_MODE == MODE_MAIN_CONTROLLER
+
+// Forward LIGHTING protocol (3 words = 12 bytes) to TTGO via SoftwareSerial
+void forwardLightingProtocol(uint32_t word1, uint32_t word2, uint32_t word3) {
+  // Send all 3 words in big-endian format
+  for (int i = 3; i >= 0; i--) {
+    LightingSerial.write((word1 >> (i * 8)) & 0xFF);
+  }
+  for (int i = 3; i >= 0; i--) {
+    LightingSerial.write((word2 >> (i * 8)) & 0xFF);
+  }
+  for (int i = 3; i >= 0; i--) {
+    LightingSerial.write((word3 >> (i * 8)) & 0xFF);
+  }
+  
+  #if DEBUG_PROTOCOL_OUTPUT
+  Serial.println(F("[FORWARD] Sent LIGHTING protocol to TTGO"));
+  #endif
+}
+
+// Forward debug message to TTGO for OLED display
+void forwardDebugMessage(const char* message) {
+  // Send a special debug message protocol (not part of the main protocol)
+  // Format: 0xFF (marker) + length + message
+  uint8_t len = strlen(message);
+  if (len > 60) len = 60;  // Limit message length
+  
+  LightingSerial.write(0xFF);  // Debug message marker
+  LightingSerial.write(len);
+  LightingSerial.write((const uint8_t*)message, len);
+}
+
+#endif // MODE_MAIN_CONTROLLER
 
 // ============================================================================
 // ARDUINO SETUP & LOOP
 // ============================================================================
 
 void setup() {
-  // Initialize serial communication
+  // Initialize USB serial communication (for debugging/monitoring)
   Serial.begin(115200);
   
-  // Initialize target states
+  #if BOARD_MODE == MODE_MAIN_CONTROLLER
+  // ============================================================================
+  // MAIN CONTROLLER SETUP (Arduino Uno R3)
+  // ============================================================================
+  Serial.println(F("================================="));
+  Serial.println(F("MAIN CONTROLLER (Arduino Uno R3)"));
+  Serial.println(F("================================="));
+  
+  // Initialize SoftwareSerial to TTGO lighting controller
+  LightingSerial.begin(115200);
+  Serial.println(F("SoftwareSerial to TTGO initialized (D8/D9, 115200 baud)"));
+  
+  // Initialize servo system
+  initializeServoSystem();
+  Serial.println(F("Servo system initialized (Adafruit PWM Shield)"));
+  
+  // Set initial state
+  currentState = STATE_IDLE;
+  
+  // Send startup signal to server
+  sendReturnProtocol(RETURN_MODE_IDLE, TARGET_ID_CONTROLLER, STATUS_IDLE);
+  Serial.println(F("Ready: Waiting for protocols from server..."));
+  
+  #elif BOARD_MODE == MODE_LIGHTING_CONTROLLER
+  // ============================================================================
+  // LIGHTING CONTROLLER SETUP (TTGO LoRa32 v1)
+  // ============================================================================
+  Serial.println(F("===================================="));
+  Serial.println(F("LIGHTING CONTROLLER (TTGO LoRa32)"));
+  Serial.println(F("===================================="));
+  
+  // Initialize OLED display
+  initializeOLED();
+  displayDebug("Booting...");
+  
+  // Initialize UART2 for communication with Uno R3
+  Serial2.begin(115200, SERIAL_8N1, UART2_RX_PIN, UART2_TX_PIN);
+  Serial.println(F("UART2 initialized (GPIO22 RX, GPIO17 TX, 115200 baud)"));
+  displayDebug("UART2 ready");
+  
+  // Initialize LED strips (WS2814 WRGB)
+  Serial.print(F("Initializing "));
+  Serial.print(NUM_LED_PINS);
+  Serial.print(F(" LED strips ("));
+  Serial.print(LEDS_PER_PIN);
+  Serial.println(F(" LEDs each)..."));
+  displayDebug("Init LEDs...");
+  
+  for (uint8_t pin = 0; pin < NUM_LED_PINS; pin++) {
+    ledStrips[pin].begin();
+    ledStrips[pin].setBrightness(128);  // 50% brightness
+    ledStrips[pin].show();  // Initialize all pixels to 'off'
+    Serial.print(F("  Strip "));
+    Serial.print(pin);
+    Serial.print(F(" (GPIO"));
+    Serial.print(pin == 0 ? LED_PIN_0 : pin == 1 ? LED_PIN_1 : pin == 2 ? LED_PIN_2 : LED_PIN_3);
+    Serial.print(F("): "));
+    Serial.print(ledStrips[pin].numPixels());
+    Serial.print(F(" LEDs = "));
+    Serial.print(ledStrips[pin].numPixels() * 4);
+    Serial.println(F(" bytes RAM"));
+  }
+  
+  Serial.println(F("LED strips initialized (NEO_WRGB + NEO_KHZ800)"));
+  displayDebug("LEDs ready");
+  
+  // Initialize LED patterns
+  initializeDefaultPatterns();
+  Serial.println(F("LED patterns initialized"));
+  displayDebug("Patterns ready");
+  
+  Serial.println(F("Ready: Waiting for LIGHTING protocols from Uno R3..."));
+  displayDebug("System ready!");
+  
+  #endif
+  
+  // Initialize target states (common to both boards, minimal RAM)
   for (int i = 0; i < NUM_TARGETS; i++) {
+    #if BOARD_MODE == MODE_MAIN_CONTROLLER
     targetStates[i].active = false;
     targetStates[i].currentVisibility = 0;
     targetStates[i].movementSpeed = 0;
@@ -1287,8 +1779,9 @@ void setup() {
     targetStates[i].baseSpeed = 0;
     targetStates[i].lastMoveTime = 0;
     targetStates[i].nextCycleTime = 0;
+    #endif
     
-#if ENABLE_LED_SYSTEM
+    #if ENABLE_LED_SYSTEM
     // Initialize lighting states
     targetLightingStates[i].isOn = false;
     targetLightingStates[i].brightness = 0;
@@ -1296,10 +1789,10 @@ void setup() {
     targetLightingStates[i].green = 0;
     targetLightingStates[i].blue = 0;
     targetLightingStates[i].white = 0;
-#endif
+    #endif
   }
   
-#if ENABLE_LED_SYSTEM
+  #if ENABLE_LED_SYSTEM
   // Initialize arena lighting
   arenaLightingState.isOn = false;
   arenaLightingState.brightness = 0;
@@ -1307,50 +1800,16 @@ void setup() {
   arenaLightingState.green = 0;
   arenaLightingState.blue = 0;
   arenaLightingState.white = 0;
-  
-  // Initialize LED strips (WS2814 WRGB)
-  Serial.print(F("Initializing "));
-  Serial.print(NUM_LED_PINS);
-  Serial.print(F(" LED strips ("));
-  Serial.print(LEDS_PER_PIN);
-  Serial.println(F(" LEDs each)..."));
-  
-  for (uint8_t pin = 0; pin < NUM_LED_PINS; pin++) {
-    ledStrips[pin].begin();
-    ledStrips[pin].setBrightness(128);  // 50% brightness
-    ledStrips[pin].show();  // Initialize all pixels to 'off'
-    Serial.print(F("  Strip "));
-    Serial.print(pin);
-    Serial.print(F(": "));
-    Serial.print(ledStrips[pin].numPixels());
-    Serial.print(F(" LEDs = "));
-    Serial.print(ledStrips[pin].numPixels() * 4);
-    Serial.println(F(" bytes RAM"));
-  }
-  
-  Serial.println(F("LED strips initialized (NEO_WRGB + NEO_KHZ800)"));
-  
-  // Initialize LED patterns
-  initializeDefaultPatterns();
-  Serial.println(F("LED patterns initialized"));
-#endif // ENABLE_LED_SYSTEM
-  
-  Serial.println(F("Ready for operation"));
-  
-  // Initialize servo system
-  initializeServoSystem();
-  
-  // TODO: Initialize sensors and other hardware
-  
-  // Set initial state
-  currentState = STATE_IDLE;
-  
-  // Send startup signal
-  sendReturnProtocol(RETURN_MODE_IDLE, TARGET_ID_CONTROLLER, STATUS_IDLE);
+  #endif
 }
 
 void loop() {
-  // Process all incoming serial data (may be multiple protocol words)
+  #if BOARD_MODE == MODE_MAIN_CONTROLLER
+  // ============================================================================
+  // MAIN CONTROLLER LOOP (Arduino Uno R3)
+  // ============================================================================
+  
+  // Process all incoming serial data from server (may be multiple protocol words)
   // This allows rapid updates from server to be applied immediately
   if (Serial.available() >= 4) {
     do {
@@ -1361,50 +1820,56 @@ void loop() {
   // Update game state
   updateGameState();
   
+  // Update servo movements for all active targets
+  for (uint8_t i = 0; i < NUM_TARGETS; i++) {
+    if (targetStates[i].active) {
+      updateTargetMovement(i);
+    }
+  }
+  
   // Check for target hits
   checkTargetHits();
   
-#if ENABLE_LED_SYSTEM
-  // Update LED pattern states based on target activity
-  updatePatternStates();
-  
+  #elif BOARD_MODE == MODE_LIGHTING_CONTROLLER
   // ============================================================================
-  // TEMPORARY: LED PATTERN TEST - DISABLED FOR DIAGNOSTICS
+  // LIGHTING CONTROLLER LOOP (TTGO LoRa32 v1)
   // ============================================================================
-  /*
-  // Cycle through pattern states every 3 seconds to test all patterns
-  static uint32_t lastPatternChange = 0;
-  static uint8_t testPatternIndex = 0;
   
-  if (millis() - lastPatternChange > 3000) {
-    lastPatternChange = millis();
+  // Process LIGHTING protocols from Uno R3 via UART2
+  if (Serial2.available() >= 4) {
+    // Check if this is a debug message (starts with 0xFF)
+    uint8_t firstByte = Serial2.peek();
     
-    // Cycle through pattern states: IDLE -> MOVING -> HIT -> IDLE...
-    PatternState testState = (PatternState)(testPatternIndex % 3);
-    
-    // Apply test pattern to first 3 targets (visible on Pin D2)
-    for (uint8_t i = 0; i < 3; i++) {
-      currentPatternState[i] = testState;
-      markTargetLEDsDirty(i);
+    if (firstByte == 0xFF) {
+      // Debug message from main controller
+      Serial2.read();  // Consume marker
+      if (Serial2.available() >= 1) {
+        uint8_t len = Serial2.read();
+        if (Serial2.available() >= len) {
+          char debugMsg[61];
+          Serial2.readBytes((uint8_t*)debugMsg, len);
+          debugMsg[len] = '\0';
+          displayDebug(debugMsg);
+        }
+      }
+    } else {
+      // Regular protocol data (LIGHTING protocol = 12 bytes)
+      do {
+        processSerialData();
+      } while (Serial2.available() >= 12);
     }
-    
-    testPatternIndex++;
-    
-    // Debug output
-    #if DEBUG_PROTOCOL_OUTPUT
-    const char* stateNames[] = {"IDLE", "MOVING", "HIT"};
-    Serial.print("LED TEST: Pattern changed to ");
-    Serial.println(stateNames[testState]);
-    #endif
   }
-  */
-  // ============================================================================
-  // END TEMPORARY TEST
-  // ============================================================================
+  
+  // Update LED pattern states based on target activity (received via protocols)
+  updatePatternStates();
   
   // Update LEDs (only dirty pins are refreshed)
   updateDirtyLEDs();
-#endif // ENABLE_LED_SYSTEM
+  
+  // Update OLED display
+  updateOLEDDisplay();
+  
+  #endif
   
   // No delay - run at full speed for maximum responsiveness
 }
