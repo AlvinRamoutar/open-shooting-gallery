@@ -1,49 +1,51 @@
-# Dual Board Architecture: Uno R3 + TTGO LoRa32 v1
+# Dual Board Architecture: Uno R3 + ESP32
+
+> **Hardware update (2026-08-09)**: The lighting controller board changed from a TTGO LoRa32 v1 to a **stock ESP32 dev board** (no LoRa, no OLED), and the LED pinout changed from 4 shared pins (3 targets/pin) to **12 dedicated pins (1 target/pin)**. Sections below have been updated to match.
 
 ## System Overview
 
-**New Architecture:**
+**Current Architecture:**
 ```
 Raspberry Pi (SERVER)
     ↕ USB Serial (115200 baud)
 Arduino Uno R3 (MAIN CONTROLLER)
     ↕ Hardware Serial (TX0/RX0, 115200 baud)
-TTGO LoRa32 v1 (LIGHTING CONTROLLER)
-    ↕ GPIO12/13/14/27 → Level Shifter → WS2814 LEDs
+ESP32 Dev Board (LIGHTING CONTROLLER)
+    ↕ 12× GPIO (one per target) → Level Shifter(s) → WS2814 LEDs
 ```
 
 ---
 
-## Question 1: Does TTGO LoRa32 v1 Address Earlier LED Issues?
+## Question 1: Does an ESP32 Address Earlier LED Issues?
 
 ### ✅ **YES - It's the Perfect Solution!**
 
 ### Problem vs Solution Comparison:
 
-| Issue | Arduino Uno R3 | TTGO LoRa32 v1 | Solved? |
+| Issue | Arduino Uno R3 | ESP32 Dev Board | Solved? |
 |-------|----------------|----------------|---------|
 | **RAM for 30KB LED buffers** | 2 KB (impossible) | 520 KB (5.8% usage) | ✅ YES |
-| **CPU speed for 4 strips** | 16 MHz (struggling) | 240 MHz dual-core (effortless) | ✅ YES |
-| **Multiple high-speed outputs** | Limited | 4+ GPIO pins available | ✅ YES |
+| **CPU speed for 12 strips** | 16 MHz (struggling) | 240 MHz dual-core (effortless) | ✅ YES |
+| **Multiple high-speed outputs** | Limited | 12+ GPIO pins available | ✅ YES |
 | **Flash for pattern code** | 32 KB (tight) | 4 MB (plenty) | ✅ YES |
-| **Cost** | $25 | $15-20 (cheaper!) | ✅ BONUS |
+| **Cost** | $25 | $8-15 (cheaper, no LoRa/OLED needed) | ✅ BONUS |
 
 ### Memory Analysis:
 ```
 LED Buffer Requirements:
-- 7,524 LEDs × 4 bytes (RGBW) = 30,096 bytes
+- 7,536 LEDs × 4 bytes (RGBW) = 30,144 bytes
 - Pattern descriptors: 288 bytes
 - LED states: ~100 bytes
 - Code overhead: ~5,000 bytes
 TOTAL: ~35 KB
 
-TTGO LoRa32 v1:
+ESP32:
 - 520 KB RAM available
 - 35 KB / 520 KB = 6.7% RAM usage
 - 93.3% FREE for future expansion!
 ```
 
-**Verdict**: The TTGO LoRa32 v1 completely solves the RAM crisis and is actually cheaper than alternatives!
+**Verdict**: The ESP32 completely solves the RAM crisis and is actually cheaper than alternatives!
 
 ---
 
@@ -55,7 +57,7 @@ TTGO LoRa32 v1:
 ```cpp
 // Line 10 in main.cpp
 #define ENABLE_LED_SYSTEM false  // For Uno R3
-#define ENABLE_LED_SYSTEM true   // For TTGO LoRa32
+#define ENABLE_LED_SYSTEM true   // For ESP32 LoRa32
 ```
 
 ### B. New Build Mode: Lighting Controller
@@ -68,7 +70,7 @@ TTGO LoRa32 v1:
 // Compile for different hardware targets
 
 #define MODE_MAIN_CONTROLLER 1    // Arduino Uno R3: Servos, game logic, serial passthrough
-#define MODE_LIGHTING_CONTROLLER 2 // TTGO LoRa32: LED control only
+#define MODE_LIGHTING_CONTROLLER 2 // ESP32 LoRa32: LED control only
 
 // Set active mode:
 #define BOARD_MODE MODE_MAIN_CONTROLLER  // Change for each target
@@ -88,12 +90,12 @@ TTGO LoRa32 v1:
   // Problem: UART0 is also used for USB!
   // Solution: Use SoftwareSerial on different pins
   #include <SoftwareSerial.h>
-  SoftwareSerial LightingSerial(8, 9); // RX, TX to TTGO
+  SoftwareSerial LightingSerial(8, 9); // RX, TX to ESP32
   LightingSerial.begin(115200);
 #endif
 ```
 
-**TTGO LoRa32 v1** (Lighting Controller):
+**ESP32** (Lighting Controller):
 ```cpp
 #if BOARD_MODE == MODE_LIGHTING_CONTROLLER
   // UART0 for debug output (USB)
@@ -107,20 +109,10 @@ TTGO LoRa32 v1:
 #### 2. **Pin Definitions (Platform-Specific)**
 
 ```cpp
-// LED pins
-#if defined(ESP32)
-  // TTGO LoRa32 v1
-  #define LED_PIN_0 12  // Targets 0,1,2
-  #define LED_PIN_1 13  // Targets 3,4,5
-  #define LED_PIN_2 14  // Targets 6,7,8
-  #define LED_PIN_3 27  // Targets 9,10,11
-#else
-  // Arduino Uno R3 (if ever needed)
-  #define LED_PIN_0 2
-  #define LED_PIN_1 3
-  #define LED_PIN_2 4
-  #define LED_PIN_3 5
-#endif
+// LED pins - one dedicated GPIO per target (ESP32 dev board)
+const uint8_t LED_PINS[NUM_LED_PINS] = {
+  4, 13, 14, 18, 19, 21, 22, 23, 25, 26, 27, 32  // Targets 0-11
+};
 
 // Servo pins (Uno R3 only)
 #if BOARD_MODE == MODE_MAIN_CONTROLLER
@@ -134,9 +126,9 @@ TTGO LoRa32 v1:
 **Main Controller (Uno R3):**
 - Receive ALL protocols from server
 - Process GENERAL and TARGET protocols locally
-- Forward LIGHTING protocols to TTGO via serial
+- Forward LIGHTING protocols to ESP32 via serial
 
-**Lighting Controller (TTGO):**
+**Lighting Controller (ESP32):**
 - Receive LIGHTING protocols from Uno R3
 - Process LED patterns and update strips
 - Send status back to Uno R3 (optional)
@@ -169,7 +161,7 @@ void processSerialData() {
         // Forward to lighting controller
         uint32_t word2, word3;
         if (readSerialWord(word2) && readSerialWord(word3)) {
-          // Send all 3 words to TTGO
+          // Send all 3 words to the ESP32
           LightingSerial.write((uint8_t*)&word, 4);
           LightingSerial.write((uint8_t*)&word2, 4);
           LightingSerial.write((uint8_t*)&word3, 4);
@@ -182,7 +174,7 @@ void processSerialData() {
 #endif
 ```
 
-#### 5. **Lighting Controller Processing Logic**
+#### 5. **Lighting Controller Processing Logic (ESP32)**
 
 ```cpp
 #if BOARD_MODE == MODE_LIGHTING_CONTROLLER
@@ -211,36 +203,33 @@ void loop() {
 
 ### D. PlatformIO Configuration Updates
 
-**Already added in platformio.ini:**
+**Current platformio.ini:**
 ```ini
-[env:ttgo-lora32-v1]
+[env:esp32-lighting]
 platform = espressif32
-board = ttgo-lora32-v1
+board = esp32dev
 upload_port = COM11
 monitor_port = COM11
 framework = arduino
 lib_deps =
-    adafruit/Adafruit NeoPixel@^1.12.0  # ADD THIS
-    # Remove OLED/LoRa libs if not needed
+    adafruit/Adafruit NeoPixel@^1.12.0
 ```
 
 ### E. Build Flags for Easy Switching
 
-**Recommended approach:**
+**Current approach:**
 ```ini
 [env:uno-main]
 platform = atmelavr
 board = uno
 build_flags = 
     -DBOARD_MODE=1  # MODE_MAIN_CONTROLLER
-    -DENABLE_LED_SYSTEM=false
 
-[env:ttgo-lighting]
+[env:esp32-lighting]
 platform = espressif32
-board = ttgo-lora32-v1
+board = esp32dev
 build_flags = 
     -DBOARD_MODE=2  # MODE_LIGHTING_CONTROLLER
-    -DENABLE_LED_SYSTEM=true
 ```
 
 ---
@@ -251,7 +240,7 @@ build_flags =
 
 **Problem:**
 - Arduino Uno R3 outputs **5V logic** (TX)
-- TTGO LoRa32 v1 expects **3.3V input** (RX = GPIO16)
+- ESP32 expects **3.3V input** (RX = GPIO16)
 - **Direct connection WILL DAMAGE the ESP32!**
 
 **Solution: Voltage Divider for Uno TX → ESP32 RX**
@@ -260,7 +249,7 @@ build_flags =
 
 ```
 ┌─────────────────────┐           ┌─────────────────────┐
-│  Arduino Uno R3     │           │  TTGO LoRa32 v1     │
+│  Arduino Uno R3     │           │  ESP32     │
 │  (Main Controller)  │           │  (Lighting)         │
 ├─────────────────────┤           ├─────────────────────┤
 │                     │           │                     │
@@ -283,7 +272,7 @@ Voltage at ESP32 RX = 5V × (2kΩ / 3kΩ) = 3.3V ✓
 
 ### Detailed Connection Table
 
-| Arduino Uno R3 | Component | TTGO LoRa32 v1 | Signal Direction |
+| Arduino Uno R3 | Component | ESP32 | Signal Direction |
 |----------------|-----------|----------------|------------------|
 | **D8** (SoftwareSerial TX) | → 1kΩ resistor → | **GPIO16** (UART2 RX) | Uno → ESP32 |
 | (midpoint of divider) | → 2kΩ resistor → GND | - | Voltage division |
@@ -351,66 +340,55 @@ Voltage at ESP32 RX = 5V × (R2 / (R1 + R2))
 - WS2814 requires **≥3.5V logic** (0.7 × 5V supply)
 - **Will not work reliably without level shifting!**
 
-### Solution: 74HCT245 Level Shifter
+### Solution: 3× BSS138 4-Channel Level Shifter Modules
 
-**Recommended IC:** 74HCT245 (octal bus transceiver)
-- Converts 3.3V → 5V
-- Fast enough for 800kHz WS2814 timing
-- Handles 8 channels (only need 4)
-- Cost: ~$1
+**In use for this build:** 3× generic BSS138 4-channel bi-directional logic level converter modules (the same breakout style used for the Uno↔ESP32 UART link) — 3 modules × 4 channels = 12 channels, an exact fit for the 12 LED pins.
+- Converts 3.3V ↔ 5V (bi-directional, though only ESP32→LED direction is used here)
+- Each module has its own `LV`/`HV` power rails and 4 channel pairs (`LV1-4` / `HV1-4`)
+- Cost: ~$1-2/module, ~$3-6 total
 
-### Wiring Diagram: ESP32 → Level Shifter → LEDs
+### Wiring Diagram: ESP32 → BSS138 Modules → LEDs
 
 ```
-┌──────────────────┐      ┌──────────────┐      ┌────────────┐
-│  TTGO LoRa32 v1  │      │  74HCT245    │      │  WS2814    │
-├──────────────────┤      ├──────────────┤      │  LEDs      │
-│                  │      │              │      │            │
-│ GPIO12 ─────────►┼─────►│ A1      B1 ─┼─────►│ DI (Strip 0)│
-│ GPIO13 ─────────►┼─────►│ A2      B2 ─┼─────►│ DI (Strip 1)│
-│ GPIO14 ─────────►┼─────►│ A3      B3 ─┼─────►│ DI (Strip 2)│
-│ GPIO27 ─────────►┼─────►│ A4      B4 ─┼─────►│ DI (Strip 3)│
-│                  │      │              │      │            │
-│ 3.3V ───────────►┼─────►│ VCC (A side)│      │            │
-│ GND ─────────────┼─────►│ GND         │◄─────┼─── GND     │
-│                  │      │ VCC (B side)│◄─────┼─── +5V*    │
-│                  │      │ DIR → VCC   │      │            │
-│                  │      │ /OE → GND   │      │            │
-└──────────────────┘      └──────────────┘      └────────────┘
+┌──────────────────┐      ┌──────────────┐      ┌────────────────┐
+│  ESP32           │      │  BSS138 #1   │      │  WS2814 LEDs   │
+├──────────────────┤      ├──────────────┤      ├────────────────┤
+│ GPIO4  ─────────►│─────►│ LV1     HV1 ─│─────►│ DI (Target 0)  │
+│ GPIO13 ─────────►│─────►│ LV2     HV2 ─│─────►│ DI (Target 1)  │
+│ GPIO14 ─────────►│─────►│ LV3     HV3 ─│─────►│ DI (Target 2)  │
+│ GPIO18 ─────────►│─────►│ LV4     HV4 ─│─────►│ DI (Target 3)  │
+│                  │      │              │      │                │
+│                  │      ┌──────────────┐      │                │
+│                  │      │  BSS138 #2   │      │                │
+│ GPIO19 ─────────►│─────►│ LV1     HV1 ─│─────►│ DI (Target 4)  │
+│ GPIO21 ─────────►│─────►│ LV2     HV2 ─│─────►│ DI (Target 5)  │
+│ GPIO22 ─────────►│─────►│ LV3     HV3 ─│─────►│ DI (Target 6)  │
+│ GPIO23 ─────────►│─────►│ LV4     HV4 ─│─────►│ DI (Target 7)  │
+│                  │      │              │      │                │
+│                  │      ┌──────────────┐      │                │
+│                  │      │  BSS138 #3   │      │                │
+│ GPIO25 ─────────►│─────►│ LV1     HV1 ─│─────►│ DI (Target 8)  │
+│ GPIO26 ─────────►│─────►│ LV2     HV2 ─│─────►│ DI (Target 9)  │
+│ GPIO27 ─────────►│─────►│ LV3     HV3 ─│─────►│ DI (Target 10) │
+│ GPIO32 ─────────►│─────►│ LV4     HV4 ─│─────►│ DI (Target 11) │
+│                  │      │              │      │                │
+│ 3.3V ───────────►│─────►│ LV (all 3 modules)  │                │
+│ GND ─────────────│──────│ GND     HV ◄─┼──────┼─── +5V*        │
+└──────────────────┘      └──────────────┘      └────────────────┘
 
 * 5V from separate power supply (NOT from ESP32!)
   Your 24V supply should have a 5V regulator for WS2814 logic
 ```
 
-### 74HCT245 Pin Configuration
+### BSS138 Module Configuration (×3)
 
 | Pin | Function | Connect To |
 |-----|----------|------------|
-| **A1-A4** | 3.3V inputs | ESP32 GPIO12/13/14/27 |
-| **B1-B4** | 5V outputs | WS2814 DI pins (via 330Ω) |
-| **DIR** | Direction | VCC (5V) - A→B direction |
-| **/OE** | Output Enable | GND - always enabled |
-| **VCC (A)** | Low voltage | ESP32 3.3V |
-| **VCC (B)** | High voltage | 5V from LED power supply |
-| **GND** | Ground | Common ground |
-
-### Alternative: Per-Channel Level Shift
-
-If you don't want to add a 74HCT245, you can try:
-
-**Option 1: 330Ω Resistor + Short Wire (may work)**
-- Some WS2814 strips accept 3.3V if first LED is very close
-- Add 330Ω resistor between ESP32 GPIO and LED DI
-- Keep wire <6 inches
-- **Success rate: ~60%** (not guaranteed)
-
-**Option 2: BSS138 MOSFET Shifter (per channel)**
-- More reliable than resistor-only
-- Requires 4 MOSFETs + resistors
-- Cost: ~$2 total
-- More complex wiring
-
-**Recommendation:** Use 74HCT245 for reliability!
+| **LV1-4** (per module) | 3.3V inputs | ESP32 GPIO 4,13,14,18 (module 1), 19,21,22,23 (module 2), 25,26,27,32 (module 3) |
+| **HV1-4** (per module) | 5V outputs | WS2814 DI pins (via 330Ω) |
+| **LV** | Low voltage rail | ESP32 3.3V |
+| **HV** | High voltage rail | 5V from LED power supply |
+| **GND** | Ground | Common ground — shared across all 3 modules, the ESP32, and the LED power supply |
 
 ---
 
@@ -426,7 +404,7 @@ If you don't want to add a 74HCT245, you can try:
 │        │        │
 │        └───┬────┼──► 5V Regulator (e.g., LM7805 or buck converter)
 │            │    │         │
-│            │    │         └──► 74HCT245 VCC(B) + WS2814 logic
+│            │    │         └──► BSS138 HV rails (×3) + WS2814 logic
 │            │    │
 │            │    │
 │ GND ───────┴────┼──► Common ground (all boards + LEDs)
@@ -442,7 +420,7 @@ If you don't want to add a 74HCT245, you can try:
 ┌─────────────────┐
 │ USB Power       │
 ├─────────────────┤
-│ +5V ────────────┼──► TTGO LoRa32 v1 (via USB)
+│ +5V ────────────┼──► ESP32 (via USB)
 │ GND ────────────┼──► Common ground
 └─────────────────┘
 ```
@@ -452,25 +430,24 @@ If you don't want to add a 74HCT245, you can try:
 **Server ↔ Uno R3:**
 - USB cable (5V power + Serial communication)
 
-**Uno R3 ↔ TTGO LoRa32 v1:**
-- Uno D8 → 1kΩ → (midpoint) → 2kΩ → GND (voltage divider to 3.3V) → TTGO GPIO16
-- Uno D9 ← direct wire ← TTGO GPIO17
+**Uno R3 ↔ ESP32:**
+- Uno D8 → 1kΩ → (midpoint) → 2kΩ → GND (voltage divider to 3.3V) → ESP32 GPIO16
+- Uno D9 ← direct wire ← ESP32 GPIO17
 - GND ← common ← GND
 
-**TTGO LoRa32 v1 → LEDs:**
-- GPIO12 → 74HCT245 A1 → B1 → 330Ω → LED Strip 0 DI
-- GPIO13 → 74HCT245 A2 → B2 → 330Ω → LED Strip 1 DI
-- GPIO14 → 74HCT245 A3 → B3 → 330Ω → LED Strip 2 DI
-- GPIO27 → 74HCT245 A4 → B4 → 330Ω → LED Strip 3 DI
+**ESP32 → LEDs** (one pin per target, `LED_PINS[]` in `main.cpp`):
+- GPIO4, 13, 14, 18 → BSS138 #1 (LV1-4) → HV1-4 → 330Ω each → LED Targets 0-3 DI
+- GPIO19, 21, 22, 23 → BSS138 #2 (LV1-4) → HV1-4 → 330Ω each → LED Targets 4-7 DI
+- GPIO25, 26, 27, 32 → BSS138 #3 (LV1-4) → HV1-4 → 330Ω each → LED Targets 8-11 DI
 
 ---
 
 ## Implementation Checklist
 
 ### Hardware
-- [ ] Purchase TTGO LoRa32 v1 board (~$15-20)
-- [ ] Purchase 74HCT245 level shifter IC (~$1)
-- [ ] Gather resistors: 2× 1kΩ, 2× 2kΩ, 4× 330Ω
+- [ ] Purchase ESP32 dev board (~$8-15)
+- [x] 3× BSS138 4-channel level shifter modules (~$3-6 total) — on hand
+- [ ] Gather resistors: 2× 1kΩ, 2× 2kΩ (Uno↔ESP32 UART), 12× 330Ω (LED data lines)
 - [ ] 5V voltage regulator (if not already in LED power system)
 - [ ] Breadboard or PCB for level shifter circuit
 - [ ] Jumper wires
@@ -478,18 +455,18 @@ If you don't want to add a 74HCT245, you can try:
 ### Software
 - [ ] Add `BOARD_MODE` compile-time flag to main.cpp
 - [ ] Implement SoftwareSerial on Uno R3 (D8/D9)
-- [ ] Configure UART2 on TTGO (GPIO16/17)
+- [ ] Configure UART2 on ESP32 (GPIO16/17)
 - [ ] Add protocol forwarding logic to Uno
-- [ ] Test lighting protocol reception on TTGO
-- [ ] Update platformio.ini with NeoPixel library for TTGO
+- [ ] Test lighting protocol reception on ESP32
+- [ ] Update platformio.ini with NeoPixel library for ESP32
 - [ ] Create build configurations for each board
 
 ### Testing
-- [ ] Test Uno ↔ TTGO serial communication (echo test)
+- [ ] Test Uno ↔ ESP32 serial communication (echo test)
 - [ ] Test voltage levels with multimeter (3.3V at ESP32 RX)
-- [ ] Test single LED strip with TTGO + level shifter
-- [ ] Test all 4 LED strips simultaneously
-- [ ] Test full system: Server → Uno → TTGO → LEDs
+- [ ] Test single LED strip with ESP32 + level shifter
+- [ ] Test all 12 LED strips simultaneously
+- [ ] Test full system: Server → Uno → ESP32 → LEDs
 
 ---
 
@@ -497,9 +474,8 @@ If you don't want to add a 74HCT245, you can try:
 
 ✅ **Modular Design**: Replace/upgrade boards independently  
 ✅ **Uno R3 Focus**: Handles servos and game logic without RAM constraints  
-✅ **TTGO Focus**: Dedicated LED controller with ample RAM  
-✅ **Cost Effective**: TTGO LoRa32 v1 is cheaper than Arduino Mega/Teensy  
-✅ **Future Expansion**: LoRa radio available for wireless features  
+✅ **ESP32 Focus**: Dedicated LED controller with ample RAM and enough free GPIOs for a dedicated pin per target  
+✅ **Cost Effective**: ESP32 is cheaper than Arduino Mega/Teensy, and a stock dev board is cheaper than the TTGO LoRa32 it replaced  
 ✅ **Single Codebase**: Same code compiles for both targets with flags  
 ✅ **Easy Debugging**: Each board can be tested independently  
 
@@ -507,14 +483,14 @@ If you don't want to add a 74HCT245, you can try:
 
 ## Potential Future Enhancements
 
-1. **LoRa Remote Control**: Use built-in LoRa for wireless game control
-2. **OLED Status Display**: Show LED status, target states on OLED
-3. **WiFi Integration**: ESP32 can add web interface for LED control
-4. **Bluetooth**: Control LEDs from mobile app
-5. **SD Card Logging**: Log game events (TTGO can add SD card module)
+1. **WiFi Integration**: ESP32 can add web interface for LED control
+2. **Bluetooth**: Control LEDs from mobile app
+3. **SD Card Logging**: Log game events (ESP32 can add SD card module)
+4. **External module for LoRa/OLED**: The stock ESP32 dev board has no on-board LoRa or OLED — either could still be added via external breakout modules if needed, but would need to share the now fully-committed 12 LED GPIOs + UART2, so re-evaluate pin budget first
 
 ---
 
 *Document created: 2026-08-04*  
-*Architecture: Uno R3 (Main) + TTGO LoRa32 v1 (Lighting)*  
+*Updated 2026-08-09: TTGO LoRa32 v1 replaced with stock ESP32 dev board; LED pinout changed from 4 shared pins to 12 dedicated pins (one per target)*  
+*Architecture: Uno R3 (Main) + ESP32 (Lighting)*  
 *Project: Open Shooting Gallery Dual Board System*

@@ -1,5 +1,7 @@
 # TTGO LoRa32 V1 Technical Specifications
 
+> ⚠️ **SUPERSEDED (2026-08-09)**: The lighting controller no longer uses this board. Hardware was swapped for a **stock ESP32 dev board** (no LoRa, no OLED), and the LED pinout moved from 4 shared pins (3 targets/pin) to **12 dedicated pins (1 target/pin)**. This entire document describes the TTGO's pin conflicts (LoRa SPI, OLED I2C) that **no longer apply** — a stock ESP32 has far more free GPIOs since there's no radio or display to share them with. Kept for historical reference only. See [DUAL_BOARD_ARCHITECTURE.md](DUAL_BOARD_ARCHITECTURE.md) for the current pinout and `main.cpp`'s `LED_PINS[]` array for the authoritative pin list.
+
 ## Hardware Overview
 
 ### Core Specifications

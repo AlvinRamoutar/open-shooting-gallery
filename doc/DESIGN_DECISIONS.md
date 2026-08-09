@@ -116,7 +116,9 @@ This document tracks all architectural and implementation decisions made during 
 
 ### LED Addressing Scheme
 
-**Decision**: Virtual segmentation of continuous LED strip
+**Superseded 2026-08-09**: Original decision below assumed 3 targets shared each data pin (4-pin architecture, see LED Pattern System hardware config). Hardware changed to a stock ESP32 with **one dedicated GPIO pin per target** (12 pins total) — see [DUAL_BOARD_ARCHITECTURE.md](DUAL_BOARD_ARCHITECTURE.md). `targetId` now maps 1:1 to a pin/strip index, so the "absolute position" offset calculation no longer exists in code — `setTargetLEDRange()`/`setTargetLED()` write directly to `ledStrips[targetId]` using the protocol's LED range unmodified. The protocol wire format (per-target 0-511 range) is unchanged.
+
+**Original decision**: Virtual segmentation of continuous LED strip
 - **Implementation**: 
   - All target LEDs on same physical SPI bus
   - Logically divided into 12 segments (0-511, 512-1023, ..., 5632-6143, etc.)
@@ -433,26 +435,32 @@ This document tracks all architectural and implementation decisions made during 
 - **Color Order**: WRGB (White, Red, Green, Blue)
 - **Voltage**: 24V power supply, 5V logic data line
 - **Density**: 896 LEDs/meter
-- **Segment Length**: 70cm per target = 627 LEDs per segment
-- **Total LEDs**: 12 targets × 627 LEDs = **7,524 LEDs**
+- **Segment Length**: 70cm per target = 628 LEDs per segment
+- **Total LEDs**: 12 targets × 628 LEDs = **7,536 LEDs**
 
-**Architecture**: 4-pin hybrid configuration
+**Architecture (current, 2026-08-09)**: 12-pin dedicated configuration on a stock ESP32
+- One GPIO data pin drives exactly one target's 628-LED strip — see `LED_PINS[]` in `main.cpp` (GPIO 4, 13, 14, 18, 19, 21, 22, 23, 25, 26, 27, 32)
+- Runs on the ESP32's 520KB RAM, so the earlier grouped-pin approach below is no longer needed for RAM reasons
+
+**Rationale for the 12-pin (1 target per pin) architecture**:
+- ✅ **Fastest possible single-target updates** (each `show()` only clocks out 628 LEDs, not a shared 1,881-LED chain)
+- ✅ **Simplest addressing**: `targetId` maps directly to `ledStrips[targetId]`, no offset math
+- ✅ **Fully independent strips**: a wiring fault on one target's pin can't affect any other target
+- ❌ Requires 12 free GPIOs + UART2 (14 total) instead of 4 — only viable because the TTGO LoRa32 (LoRa+OLED pins reserved) was replaced with a stock ESP32 dev board that has enough free GPIOs
+
+**Superseded rationale (previous 4-pin/3-targets-per-pin design, kept for history)**:
 - **Pin D2**: Targets 0, 1, 2 (1,881 LEDs)
 - **Pin D3**: Targets 3, 4, 5 (1,881 LEDs)
 - **Pin D4**: Targets 6, 7, 8 (1,881 LEDs)
 - **Pin D5**: Targets 9, 10, 11 (1,881 LEDs)
-
-**Rationale for 4-pin architecture**:
-- ✅ **4× faster single-target updates** (75ms vs 300ms for full chain)
-- ✅ **Serial buffer safe** (75ms < UART buffer overflow threshold)
-- ✅ **Selective updates** via dirty flags (skip unchanged segments)
-- ✅ **Better signal integrity** (shorter chains per pin)
-- ✅ **Pin budget** (only 4 pins, leaves D6-D13 for servos/sensors)
-- ❌ Single-pin architecture rejected due to 300ms interrupts-disabled freeze
+- ✅ 4× faster single-target updates than a single full chain (75ms vs 300ms)
+- ✅ Pin budget: only needed 4 pins, leaving more free for servos/sensors on a constrained board
+- ❌ Single-pin architecture (all 12 targets on 1 pin) rejected due to 300ms interrupts-disabled freeze
+- This tradeoff no longer applies now that every target has its own pin
 
 ### Pattern Descriptor Architecture
 
-**Problem**: Full LED buffer requires **30,096 bytes** (7,524 LEDs × 4 bytes WRGB) but Arduino Uno has only **2,048 bytes RAM total**.
+**Problem**: Full LED buffer requires **30,144 bytes** (7,536 LEDs × 4 bytes WRGB) but Arduino Uno has only **2,048 bytes RAM total**.
 
 **Solution**: Store pattern definitions (8 bytes) instead of pixel data (30KB).
 
@@ -471,8 +479,8 @@ struct PatternDescriptor {
 - 12 targets × 3 states (IDLE, MOVING, HIT) = 36 pattern descriptors
 - 36 × 8 bytes = **288 bytes** (vs 30KB for pixel buffer!)
 - Pattern state tracking: **12 bytes**
-- Dirty flags: **4 bytes**
-- **Total LED system RAM**: **~304 bytes** (vs 30KB impossible requirement)
+- Dirty flags: **12 bytes** (one per target/pin, since each target now has its own pin)
+- **Total LED system RAM**: **~312 bytes** (negligible against the ESP32's 520KB)
 
 ### Pattern Types
 
@@ -493,33 +501,31 @@ struct PatternDescriptor {
 
 **Concept**: Generate pixel colors **on-the-fly** during LED transmission, never store full pixel buffer.
 
-**Algorithm**:
+**Algorithm** (current: one pin drives exactly one target, no offset math needed):
 ```cpp
 void updateLEDPin(pinIndex) {
-  for (ledIndex = 0; ledIndex < 1881; ledIndex++) {
-    // Determine which target (0-2) this LED belongs to
-    targetId = (pinIndex * 3) + (ledIndex / 627);
-    ledWithinTarget = ledIndex % 627;
-    
+  targetId = pinIndex;  // 1:1 mapping
+
+  for (ledIndex = 0; ledIndex < 628; ledIndex++) {
     // Get active pattern for this target
     pattern = targetPatterns[targetId][currentPatternState[targetId]];
     
     // Generate color algorithmically (no lookup, pure math)
-    generatePixelColor(pattern, ledWithinTarget, millis(), &w, &r, &g, &b);
+    generatePixelColor(pattern, ledIndex, millis(), &w, &r, &g, &b);
     
     // Send to LED strip
     strip.setPixelColor(ledIndex, Color(r, g, b, w));
   }
   
-  strip.show();  // Transmit to LEDs (~75ms for 1,881 LEDs)
+  strip.show();  // Transmit to LEDs (~25ms for 628 LEDs)
 }
 ```
 
 **Performance**:
-- **Single pin update**: 75ms (1,881 LEDs)
-- **Full chain update**: 300ms (all 7,524 LEDs)
-- **Typical operation**: Only dirty pins updated (1-2 pins per loop iteration)
-- **Effective frame rate**: 13-40 FPS for dynamic patterns
+- **Single pin update**: ~25ms (628 LEDs per target's own strip)
+- **All 12 pins update**: ~300ms total if every target changes simultaneously, but each pin's `show()` runs independently
+- **Typical operation**: Only dirty pins updated (usually 1-2 targets per loop iteration)
+- **Effective frame rate**: improved over the shared-pin design since a single-target update no longer blocks on a 1,881-LED chain
 
 ### Pattern Generation
 
@@ -541,27 +547,27 @@ inline uint8_t scale8(uint8_t value, uint8_t scale) {
 
 **3. Modulo Wraparound** (chase pattern):
 ```cpp
-uint16_t position = ((millis() * speed) >> 6) % 627;
+uint16_t position = ((millis() * speed) >> 6) % 628;
 int16_t distance = ledIndex - position;
-if (distance < 0) distance += 627;  // Circular buffer
+if (distance < 0) distance += 628;  // Circular buffer
 ```
 
 ### Dirty Flag Optimization
 
 **Concept**: Only update LED pins that have changed patterns.
 
-**Implementation**:
+**Implementation** (current: `targetId` and pin index are the same thing):
 ```cpp
-bool ledPinDirty[4] = {false};  // 4 bits (one per pin)
+bool ledPinDirty[12] = {false};  // one flag per target/pin
 
 // Mark target's pin dirty when pattern state changes
 void markTargetLEDsDirty(targetId) {
-  ledPinDirty[targetId / 3] = true;
+  ledPinDirty[targetId] = true;
 }
 
 // In loop(): only update dirty pins
 void updateDirtyLEDs() {
-  for (pin = 0; pin < 4; pin++) {
+  for (pin = 0; pin < 12; pin++) {
     if (ledPinDirty[pin]) {
       updateLEDPin(pin);
       ledPinDirty[pin] = false;
@@ -572,8 +578,8 @@ void updateDirtyLEDs() {
 
 **Benefits**:
 - Idle system: 0ms LED overhead (no updates)
-- Single target changes: 75ms update (not 300ms)
-- All targets change: 300ms (but interruptible between pins)
+- Single target changes: ~25ms update (only that target's 628-LED strip)
+- All targets change: strips update independently per pin, no shared-chain blocking
 
 ### Pattern State Machine
 
