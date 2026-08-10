@@ -525,7 +525,11 @@ uint32_t buildReturnWord(uint8_t mode, uint8_t targetId, uint8_t status) {
   word |= (uint32_t)PROTOCOL_RETURN << 28;
   word |= (uint32_t)mode << 24;
   word |= (uint32_t)targetId << 20;
-  word |= (uint32_t)status << 18;
+  // STATUS occupies bits 19..16 — the low nibble of the second byte, per
+  // return_protocol_tx. Shifting by 18 overlapped TARGET ID (bits 23..20), so
+  // any status above 0x3 corrupted the target id: STATUS_LOST_SERVER (0x4)
+  // reported target 1 instead of target 0.
+  word |= (uint32_t)(status & 0x0F) << 16;
   return word;
 }
 
@@ -534,8 +538,18 @@ void sendReturnProtocol(uint8_t mode, uint8_t targetId, uint8_t status) {
   
   // Debug output before sending
   debugOutputReturnProtocol("TX", mode, targetId, status);
-  
-  Serial.write((uint8_t*)&word, sizeof(word));
+
+  // Write the bytes big-endian, mirroring readSerialWord(). Serial.write() on
+  // the raw uint32_t emitted the MCU's native little-endian layout, so TX and
+  // RX disagreed: a hit on target 5 (0x64510000) went out as 00 00 51 64 and
+  // read back as 0x00005164 — protocol id 0 instead of 6.
+  uint8_t bytes[4] = {
+    (uint8_t)(word >> 24),
+    (uint8_t)(word >> 16),
+    (uint8_t)(word >> 8),
+    (uint8_t)(word)
+  };
+  Serial.write(bytes, sizeof(bytes));
 }
 
 // ============================================================================
